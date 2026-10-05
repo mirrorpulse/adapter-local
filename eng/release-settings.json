@@ -1,0 +1,4 @@
+{
+  "workerProject": "src/MirrorPulse.Adapter.Local.Worker/MirrorPulse.Adapter.Local.Worker.csproj",
+  "label": "Local"
+}
