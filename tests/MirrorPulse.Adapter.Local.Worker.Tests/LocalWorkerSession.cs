@@ -104,7 +104,8 @@ internal sealed class LocalWorkerSession : IAsyncDisposable
         return chunk.Data.ToArray();
     }
 
-    public async Task<AdapterControlFrame> UploadAsync(string root, string path, byte[] content, Guid? operation = null)
+    public async Task<AdapterControlFrame> UploadAsync(string root, string path, byte[] content, Guid? operation = null,
+        AdapterMutationPreconditions? preconditions = null)
     {
         Guid request = Guid.NewGuid();
         Guid stream = Guid.NewGuid();
@@ -115,7 +116,7 @@ internal sealed class LocalWorkerSession : IAsyncDisposable
             operationId = operation ?? Guid.NewGuid(),
             streamId = stream,
             length = content.Length,
-            preconditions = new AdapterMutationPreconditions()
+            preconditions = preconditions ?? new AdapterMutationPreconditions()
         });
         AdapterControlFrame ready = await ReadAsync();
         if (ready.MessageType == "OperationError") return ready;

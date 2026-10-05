@@ -9,10 +9,34 @@ pagination cursors, range reads, and uploads are scoped by the root key. A singl
 SDK reader handles control messages and bounded binary chunks, including upload
 cancellation and immediate transfer lease cleanup.
 
-This development checkpoint supports listing, stat, range reads, and creation of
-new files. Existing destinations are preserved. Conditional replacement and
-directory/move/delete operations are being implemented before the v2 release.
+The Worker supports listing, stat, range reads, conditional uploads, directory
+creation, same-volume moves, file deletion, and empty-directory deletion. Moves
+never replace existing destinations. Nonempty directories require explicit
+child operations; the Worker does not recursively delete unaccepted children.
 The Worker does not receive a persistent state directory.
+
+## Conditional mutation and recovery
+
+Before a mutation, the Worker opens the source and its parent chain without
+following reparse points and retains ordinary Windows sharing locks. Upload
+replacement moves the exact accepted object into a temporary recovery name,
+then publishes the complete candidate without overwriting a new destination.
+If publication fails, rollback also refuses to overwrite competing content.
+An interrupted replacement retains the original `.mp-recovery-<operation-id>`
+file and returns `MutationOutcomeAmbiguous` with `recoveryRelativePath`; replay
+is blocked until the Host or user resolves that copy. Successful operations
+remove temporary copies immediately. `.mp-upload-` and `.mp-recovery-` names are
+reserved and excluded from source enumeration.
+
+These guards rely on ordinary Windows file sharing. They are not a filesystem
+compare-and-swap primitive or a security sandbox against another privileged
+process. Unsupported cross-volume moves and native operations are rejected.
+Session replay receipts are bounded and kept in memory; after Worker restart,
+the Host must reconcile an unacknowledged mutation rather than infer success.
+
+Native contracts: [CreateFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew),
+[file rename information](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_rename_info),
+and [handle-based mutation](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-setfileinformationbyhandle).
 
 Run `pwsh ./eng/verify.ps1` for locked restore, Release build, formatting, and
 real Worker process tests against disposable source directories. Provider release

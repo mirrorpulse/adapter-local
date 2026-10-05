@@ -46,12 +46,15 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
                         await ReplyAsync(command, "StatResult", new
                         {
                             rootKey = address.RootKey,
-                            revision = await RevisionAsync(paths.ResolveDirectory(address.Path), cancellationToken).ConfigureAwait(false)
+                            revision = await LocalFileOperations.RevisionAsync(paths, address.Path, cancellationToken).ConfigureAwait(false)
                         }, cancellationToken).ConfigureAwait(false);
                         break;
                     case "List": await ListAsync(command, address, paths, cancellationToken).ConfigureAwait(false); break;
                     case "ReadRange": await ReadAsync(command, address, paths, cancellationToken).ConfigureAwait(false); break;
                     case "Upload": await BeginUploadAsync(command, address, paths, cancellationToken).ConfigureAwait(false); break;
+                    case "Move":
+                    case "Delete":
+                    case "CreateDirectory": await MutateAsync(command, address, paths, cancellationToken).ConfigureAwait(false); break;
                     default: throw new InvalidDataException("CapabilityUnavailable");
                 }
             }
@@ -77,7 +80,7 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
                 throw new InvalidDataException("InvalidCursor");
         }
         string directory = paths.ResolveDirectory(address.Path);
-        string[] children = Directory.EnumerateFileSystemEntries(directory).Order(StringComparer.OrdinalIgnoreCase)
+        string[] children = Directory.EnumerateFileSystemEntries(directory).Where(item => !LocalWorkerPaths.IsTransferName(Path.GetFileName(item))).Order(StringComparer.OrdinalIgnoreCase)
             .ThenBy(item => item, StringComparer.Ordinal).Skip(offset).Take(size + 1).ToArray();
         var entries = new List<object>(size);
         foreach (string child in children.Take(size))
@@ -89,7 +92,7 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
             {
                 remoteId = relative,
                 relativePath = relative,
-                remoteRevision = await RevisionAsync(resolved, token).ConfigureAwait(false),
+                remoteRevision = await LocalFileOperations.RevisionAsync(paths, relative, token).ConfigureAwait(false),
                 itemKind = isDirectory ? "Directory" : "File",
                 length = isDirectory ? (long?)null : new FileInfo(resolved).Length,
                 creationTime = new DateTimeOffset(File.GetCreationTimeUtc(resolved), TimeSpan.Zero),
@@ -113,14 +116,8 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
         long offset = command.Payload.GetProperty("offset").GetInt64();
         long length = command.Payload.GetProperty("length").GetInt64();
         if (offset < 0 || length is < 1 or > AdapterBinaryChunkV2Codec.MaximumChunkBytes) throw new InvalidDataException("InvalidRange");
-        string resolved = paths.Resolve(address.Path);
-        await using var input = new FileStream(resolved, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, FileOptions.Asynchronous);
-        if (command.Payload.TryGetProperty("expectedRevision", out JsonElement expected) && expected.ValueKind == JsonValueKind.String &&
-            expected.GetString() != await RevisionAsync(resolved, token).ConfigureAwait(false)) throw new InvalidDataException("RemoteConflict");
-        if (offset > input.Length || length > input.Length - offset) throw new InvalidDataException("InvalidRange");
-        input.Position = offset;
-        byte[] bytes = new byte[checked((int)length)];
-        await input.ReadExactlyAsync(bytes, token).ConfigureAwait(false);
+        string? expected = command.Payload.TryGetProperty("expectedRevision", out JsonElement revision) && revision.ValueKind == JsonValueKind.String ? revision.GetString() : null;
+        byte[] bytes = await LocalFileOperations.ReadAsync(paths, address.Path, offset, checked((int)length), expected, token).ConfigureAwait(false);
         Guid stream = Guid.NewGuid();
         await ReplyAsync(command, "ReadRangeReady", new { rootKey = address.RootKey, streamId = stream, length }, token).ConfigureAwait(false);
         await channel.SendChunkAsync(new(command.RequestId, arguments.InstanceId, arguments.WorkerSessionId, stream, offset, bytes, true)
@@ -136,12 +133,17 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
         if (length < 0 || stream == Guid.Empty || _uploads.Count >= 4) throw new InvalidDataException("UploadLimit");
         if (_uploads.Values.Any(pending => pending.Operation.OperationId == operation.OperationId)) throw new InvalidDataException("OperationInProgress");
         string destination = paths.Resolve(address.Path);
-        string fingerprint = Convert.ToHexString(SHA256.HashData(AdapterProtocolJson.Encode(new { operation, length })));
+        LocalFileOperations.EnsureNoRecovery(paths, operation);
+        string fingerprint = Fingerprint(command.MessageType, operation, length);
         bool replay = _accepted.TryGetValue(operation.OperationId, out AcceptedUpload? accepted);
         if (replay && accepted!.Fingerprint != fingerprint) throw new InvalidDataException("OperationBindingMismatch");
-        // Until handle-bound replacement is enabled, existing destinations are preserved.
-        if (!replay && (operation.Preconditions?.ExpectedRevision is not null || File.Exists(destination) || Directory.Exists(destination)))
-            throw new InvalidDataException("RemoteConflict");
+        if (!replay)
+        {
+            string? current = await LocalFileOperations.RevisionAsync(paths, address.Path, token).ConfigureAwait(false);
+            AdapterMutationPreconditions conditions = operation.Preconditions ?? new();
+            if (current != conditions.ExpectedRevision || (conditions.DestinationMustBeAbsent && current is not null))
+                throw new InvalidDataException("RemoteConflict");
+        }
         if (!Directory.Exists(Path.GetDirectoryName(destination))) throw new InvalidDataException("ParentNotFound");
         var lease = new AdapterTransferLease(cache);
         try
@@ -172,22 +174,7 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
             }
             else
             {
-                string destination = upload.Paths.Resolve(upload.Operation.Path);
-                upload.Lease.Stream.Position = 0;
-                string staged = Path.Combine(Path.GetDirectoryName(destination)!, ".mp-upload-" + Guid.NewGuid().ToString("N"));
-                try
-                {
-                    await using (var output = new FileStream(staged, FileMode.CreateNew, FileAccess.Write, FileShare.None, 64 * 1024, FileOptions.Asynchronous))
-                    {
-                        await upload.Lease.Stream.CopyToAsync(output, token).ConfigureAwait(false);
-                        await output.FlushAsync(token).ConfigureAwait(false);
-                    }
-                    token.ThrowIfCancellationRequested();
-                    upload.Paths.Resolve(upload.Operation.Path);
-                    File.Move(staged, destination, overwrite: false);
-                }
-                finally { File.Delete(staged); }
-                revision = await RevisionAsync(destination, token).ConfigureAwait(false);
+                revision = await LocalFileOperations.UploadAsync(upload.Paths, upload.Operation, upload.Lease.Stream, token).ConfigureAwait(false);
                 _accepted.Add(upload.Operation.OperationId, new(upload.Fingerprint, digest, revision));
                 _acceptedOrder.Enqueue(upload.Operation.OperationId);
                 if (_acceptedOrder.Count > 256) _accepted.Remove(_acceptedOrder.Dequeue());
@@ -231,14 +218,37 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
     private static AdapterOperationRequest DecodeOperation(AdapterControlFrame command) =>
         AdapterProtocolJson.Decode<AdapterOperationRequest>(Encoding.UTF8.GetBytes(command.Payload.GetRawText()));
 
-    private static async Task<string?> RevisionAsync(string path, CancellationToken token)
+    private async Task MutateAsync(AdapterControlFrame command, AdapterFileAddress address, LocalWorkerPaths paths, CancellationToken token)
     {
-        if (Directory.Exists(path)) return "directory:" + File.GetLastWriteTimeUtc(path).Ticks.ToString(CultureInfo.InvariantCulture);
-        if (!File.Exists(path)) return null;
-        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, FileOptions.Asynchronous);
-        string digest = Convert.ToHexString(await SHA256.HashDataAsync(stream, token).ConfigureAwait(false));
-        return stream.Length.ToString(CultureInfo.InvariantCulture) + ":" + File.GetLastWriteTimeUtc(path).Ticks.ToString(CultureInfo.InvariantCulture) + ":" + digest;
+        AdapterOperationRequest operation;
+        if (command.MessageType == "CreateDirectory")
+        {
+            AdapterCreateDirectoryRequest create = AdapterProtocolJson.Decode<AdapterCreateDirectoryRequest>(Encoding.UTF8.GetBytes(command.Payload.GetRawText()));
+            operation = new(create.OperationId, create.RootKey, create.Path, Preconditions: new(null, create.MustBeAbsent), IsDirectory: true);
+        }
+        else operation = DecodeOperation(command);
+        AdapterProtocolJson.ValidateMutation(operation, requiresDestination: command.MessageType == "Move");
+        if (address.Path.Length == 0 || operation.DestinationPath?.Length == 0) throw new InvalidDataException("RootMutationForbidden");
+        LocalWorkerPaths? destination = command.MessageType == "Move" ? roots.GetPaths(operation.DestinationRootKey!) : null;
+        string fingerprint = Fingerprint(command.MessageType, operation, null);
+        string? revision;
+        if (_accepted.TryGetValue(operation.OperationId, out AcceptedUpload? accepted))
+        {
+            if (accepted.Fingerprint != fingerprint) throw new InvalidDataException("OperationBindingMismatch");
+            revision = accepted.Revision;
+        }
+        else
+        {
+            revision = await LocalFileOperations.MutateAsync(command.MessageType, paths, operation, destination, token).ConfigureAwait(false);
+            _accepted.Add(operation.OperationId, new(fingerprint, null, revision));
+            _acceptedOrder.Enqueue(operation.OperationId);
+            if (_acceptedOrder.Count > 256) _accepted.Remove(_acceptedOrder.Dequeue());
+        }
+        await ReplyAsync(command, "MutationComplete", new { rootKey = operation.RootKey, operationId = operation.OperationId, revision }, token).ConfigureAwait(false);
     }
+
+    private static string Fingerprint(string type, AdapterOperationRequest operation, long? length) =>
+        Convert.ToHexString(SHA256.HashData(AdapterProtocolJson.Encode(new { type, operation, length })));
 
     private ValueTask ReplyAsync(AdapterControlFrame command, string type, object payload, CancellationToken token) =>
         channel.SendAsync(type, command.RequestId, true, payload, token);
@@ -249,6 +259,12 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
     {
         string code = exception switch
         {
+            LocalRecoveryRequiredException => "MutationOutcomeAmbiguous",
+            NativeFileException { NativeError: 32 or 33 } => "RemoteConflict",
+            NativeFileException { NativeError: 80 or 183 } => "DestinationExists",
+            NativeFileException { NativeError: 145 } => "DirectoryNotEmpty",
+            NativeFileException { NativeError: 1 or 17 or 50 or 87 } => "CapabilityUnavailable",
+            NativeFileException { NativeError: 5 } => "AccessDenied",
             InvalidDataException => exception.Message,
             UnauthorizedAccessException => "AccessDenied",
             FileNotFoundException or DirectoryNotFoundException => "SourceUnavailable",
@@ -259,6 +275,7 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
         return ReplyAsync(command, "OperationError", new
         {
             code,
+            recoveryRelativePath = (exception as LocalRecoveryRequiredException)?.RecoveryRelativePath,
             rootKey = payload.TryGetProperty("rootKey", out JsonElement root) && root.ValueKind == JsonValueKind.String ? root.GetString() : null,
             operationId = payload.TryGetProperty("operationId", out JsonElement operation) && operation.ValueKind == JsonValueKind.String && operation.TryGetGuid(out Guid id) ? (Guid?)id : null
         }, token);
@@ -270,7 +287,7 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
         _uploads.Clear();
     }
 
-    private sealed record AcceptedUpload(string Fingerprint, string Digest, string? Revision);
+    private sealed record AcceptedUpload(string Fingerprint, string? Digest, string? Revision);
     private sealed record PendingUpload(AdapterControlFrame Command, AdapterOperationRequest Operation, LocalWorkerPaths Paths,
         string Fingerprint, bool Replay, AdapterStreamBinding Binding, AdapterTransferLease Lease);
 }

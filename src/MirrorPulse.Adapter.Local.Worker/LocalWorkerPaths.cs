@@ -38,7 +38,7 @@ public sealed class LocalWorkerPaths
         string[] segments = relativePath.Replace('/', Path.DirectorySeparatorChar)
             .Split(Path.DirectorySeparatorChar);
         if (segments.Any(segment => segment.Length == 0 || segment is "." or ".." ||
-            segment.Contains(':')))
+            segment.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || segment.EndsWith('.') || segment.EndsWith(' ') || IsDeviceName(segment) || IsTransferName(segment)))
         {
             throw new InvalidDataException("The local Worker path contains an unsafe segment.");
         }
@@ -72,4 +72,15 @@ public sealed class LocalWorkerPaths
 
         return Resolve(relativePath);
     }
+
+    private static bool IsDeviceName(string segment)
+    {
+        string name = segment.Split('.')[0].ToUpperInvariant();
+        return name is "CON" or "PRN" or "AUX" or "NUL" or "CONIN$" or "CONOUT$" ||
+            (name.Length == 4 && (name.StartsWith("COM", StringComparison.Ordinal) || name.StartsWith("LPT", StringComparison.Ordinal)) &&
+                name[3] is >= '1' and <= '9' or '¹' or '²' or '³');
+    }
+
+    internal static bool IsTransferName(string segment) => segment.StartsWith(".mp-upload-", StringComparison.OrdinalIgnoreCase) ||
+        segment.StartsWith(".mp-recovery-", StringComparison.OrdinalIgnoreCase);
 }
