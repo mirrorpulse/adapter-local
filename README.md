@@ -58,26 +58,34 @@ Licensed under Apache-2.0. See [LICENSE](LICENSE).
 
 ## Release governance
 
-The release scripts and pinned staged workflow follow the template at commit
-544c594. Version/tag inputs enter scripts through environment data and are
-validated before paths or builds are created. Build has no signing secrets;
-signing uses the `adapter-signing` environment; publishing alone has write
-permission and uses `adapter-release`. Manual dispatch defaults to a verified
-signed artifact without publishing a tag or Release.
+The shared controller follows `adapter-template` 4b36f41. A reviewed and merged
+same-repository `develop` to `main` pull request produces a stable `X.Y.Z` release;
+exactly one `breaking`, `feature`, or `fix` label selects the increment. A manual
+`develop` run can publish `X.Y.Z-preview.N` only with `publish=true` and exact
+`PUBLISH` confirmation. Previews do not replace GitHub's latest stable release.
+Existing tags and published assets are immutable.
 
-Run `pwsh ./eng/verify-release.ps1` for hostile input rejection and a dual-RID
-package signed with a disposable in-memory key. Production keys are read only
-from signing-step environment variables. No private key file is read or exported.
-The embedded inventory is verified before upload; MirrorPulse independently
-verifies publisher trust at installation.
+Build has no signing credentials. The `adapter-signing` environment must restrict
+execution to `main` and `develop`; the signing step alone receives organization
+certificate secrets in memory. Stable publication requires the configured human
+approval, including the restriction against self approval. Environment names in
+YAML alone do not establish these protections.
 
-The repository owner must configure environment reviewers, trusted branch/tag
-rules and signing-secret scope. YAML environment names alone do not enforce those
-protections. Existing organization secrets remain compatible until that migration.
-Existing published v1 packages remain framework-dependent. New source builds
-produce the self-contained v2 package described above.
+Both native runners verify the same frozen signed package and hash. The release
+gate uses the Local filesystem profile, then production installation, catalog,
+Host and CfSharp demand-provider operations at MirrorPulse 99287cf. Actual
+publication candidates must pass the product's official publisher trust anchor;
+dry runs use an explicitly disposable test key and do not publish a tag or release.
+The package is not rebuilt after signing or approval.
 
-The release workflow also verifies the newly signed candidate using MirrorPulse
-16c6742 and real Local/WebDAV/SMB/FTP/SFTP Host/Worker fixtures on a disposable
-runner. It records both source commits and the candidate package hash. Publishing
-requires that protocol gate; signed dry-run assets remain unpublished.
+`eng/adapter-sdk.lock.json` pins the original SDK 0.2.1 NuGet package from its
+GitHub release. `eng/sdk-conformance.lock.json` pins the specification and native
+conformance assets from the same source and verifies their lengths and hashes.
+That SDK runner implements a memory-source profile; the Local profile is built
+against the fixed SDK and exercises real disposable filesystem sources instead.
+No latest SDK source checkout or unpublished SDK rebuild participates in this gate.
+
+Run `pwsh ./eng/verify.ps1` and `pwsh ./eng/verify-release.ps1` for source and
+signed payload checks. Existing v1 releases remain unchanged; release evidence
+records the selected version, source SHA, payload hash, native runtime and trust
+mode so a tested preview cannot be confused with an older stable package.

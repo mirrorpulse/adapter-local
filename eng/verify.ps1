@@ -1,6 +1,8 @@
 [CmdletBinding()]
 param()
 $ErrorActionPreference = "Stop"
+& (Join-Path $PSScriptRoot 'verify-adapter-version.ps1')
+& (Join-Path $PSScriptRoot 'verify-adapter-publishing.ps1')
 & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'restore-adapter-sdk.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Pinned SDK verification failed.' }
 $projects = @("src/MirrorPulse.Adapter.Local.Worker/MirrorPulse.Adapter.Local.Worker.csproj", "tests/MirrorPulse.Adapter.Local.Worker.Tests/MirrorPulse.Adapter.Local.Worker.Tests.csproj", "tools/MirrorPulse.Adapter.Local.Conformance/MirrorPulse.Adapter.Local.Conformance.csproj")
