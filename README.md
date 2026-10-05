@@ -42,6 +42,14 @@ Run `pwsh ./eng/verify.ps1` for locked restore, Release build, formatting, and
 real Worker process tests against disposable source directories. Provider release
 workflow migration is in progress; existing v1 releases remain unchanged.
 
+`eng/verify-release.ps1` builds one self-contained x64/ARM64 package, checks the
+included runtime and notices, signs it with an ephemeral test key, then runs the
+native signed Worker against all 12 Local conformance cases. Its environment has
+no `dotnet` on `PATH`, an unavailable `DOTNET_ROOT`, and a checked `coreclr.dll`
+module path inside the extracted package. This proves private runtime use without
+altering the machine's installed runtimes. Test signing does not establish the
+official publisher trust required by the protected release workflow.
+
 Licensed under Apache-2.0. See [LICENSE](LICENSE).
 
 ## Release governance

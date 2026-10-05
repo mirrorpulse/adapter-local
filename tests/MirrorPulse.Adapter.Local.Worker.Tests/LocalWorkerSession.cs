@@ -22,14 +22,23 @@ internal sealed class LocalWorkerSession : IAsyncDisposable
         string pipeName = "mp-local-test-" + Guid.NewGuid().ToString("N");
         _pipe = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
             PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
-        string repository = FindRepository();
-        var start = new ProcessStartInfo(Path.Combine(repository, "src", "MirrorPulse.Adapter.Local.Worker", "bin", "Release",
-            "net10.0-windows", "MirrorPulse.Adapter.Local.Worker.exe"))
+        string? configuredWorker = Environment.GetEnvironmentVariable("MP_LOCAL_TEST_WORKER_EXE");
+        string executable = configuredWorker ?? Path.Combine(FindRepository(), "src", "MirrorPulse.Adapter.Local.Worker", "bin", "Release",
+            "net10.0-windows", "MirrorPulse.Adapter.Local.Worker.exe");
+        var start = new ProcessStartInfo(executable)
         { UseShellExecute = false, CreateNoWindow = true };
         foreach (string argument in new[] { "--instance-id", _instance.ToString("D"), "--worker-session-id", _session.ToString("D"), "--pipe-name", pipeName })
             start.ArgumentList.Add(argument);
         Cache = Path.Combine(root, "transfers");
         start.Environment["MP_TRANSFER_CACHE_DIR"] = Cache;
+        if (configuredWorker is not null)
+        {
+            string unavailable = Path.Combine(root, "unavailable-runtime");
+            Directory.CreateDirectory(unavailable);
+            foreach (string name in new[] { "DOTNET_ROOT", "DOTNET_ROOT_X64", "DOTNET_ROOT_ARM64" }) start.Environment[name] = unavailable;
+            start.Environment["DOTNET_MULTILEVEL_LOOKUP"] = "0";
+            start.Environment["PATH"] = Environment.SystemDirectory;
+        }
         _process = Process.Start(start) ?? throw new InvalidOperationException("Worker launch failed.");
     }
 
@@ -62,6 +71,12 @@ internal sealed class LocalWorkerSession : IAsyncDisposable
             Assert.AreEqual("Connected", connected.MessageType);
             Assert.AreEqual(2, connected.ProtocolVersion);
             Assert.IsFalse(connected.Payload.TryGetProperty("sourceDirectory", out _));
+            if (Environment.GetEnvironmentVariable("MP_LOCAL_TEST_WORKER_EXE") is { } executable)
+            {
+                string privateRuntime = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(executable)!, "coreclr.dll"));
+                ProcessModule[] modules = session._process.Modules.Cast<ProcessModule>().ToArray();
+                Assert.AreEqual(privateRuntime, modules.Single(module => module.ModuleName.Equals("coreclr.dll", StringComparison.OrdinalIgnoreCase)).FileName, ignoreCase: true);
+            }
             return session;
         }
         catch { await session.DisposeAsync(); throw; }
