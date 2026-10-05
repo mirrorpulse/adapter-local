@@ -2,9 +2,21 @@
 
 This is the official repository for the MirrorPulse Local Directory Adapter.
 
-The repository contains the independently buildable Adapter SDK and a Local Directory protocol Worker. The Worker runs in its own process, uses the current-user Named Pipe protocol, confines all paths to the configured source directory, supports bounded range reads, conditional uploads, and transfer-cache staging, and publishes x64/ARM64 `.mpadapter` payloads.
+The Worker consumes the fixed, hash-verified `MirrorPulse.Adapter.Sdk` 0.2.1
+release package. The Host supplies a `sourceDirectory` for each authorized root;
+disabled roots stay offline without probing their source paths. File IDs,
+pagination cursors, range reads, and uploads are scoped by the root key. A single
+SDK reader handles control messages and bounded binary chunks, including upload
+cancellation and immediate transfer lease cleanup.
 
-Run `pwsh ./eng/verify.ps1` to validate the SDK and Worker. Releases are produced by the signed workflow after the organization signing secrets and release policy are configured.
+This development checkpoint supports listing, stat, range reads, and creation of
+new files. Existing destinations are preserved. Conditional replacement and
+directory/move/delete operations are being implemented before the v2 release.
+The Worker does not receive a persistent state directory.
+
+Run `pwsh ./eng/verify.ps1` for locked restore, Release build, formatting, and
+real Worker process tests against disposable source directories. Provider release
+workflow migration is in progress; existing v1 releases remain unchanged.
 
 Licensed under Apache-2.0. See [LICENSE](LICENSE).
 

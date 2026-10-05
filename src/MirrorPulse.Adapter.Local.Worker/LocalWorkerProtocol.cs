@@ -1,0 +1,276 @@
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using MirrorPulse.Adapter.Sdk;
+
+namespace MirrorPulse.Adapter.Local.Worker;
+
+/// <summary>One reader multiplexes control and bounded SDK transfer frames for all authorized roots.</summary>
+internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, AdapterWorkerProcessArguments arguments,
+    LocalWorkerRoots roots, string cache) : IAsyncDisposable
+{
+    private readonly Dictionary<Guid, PendingUpload> _uploads = [];
+    private readonly Dictionary<Guid, AcceptedUpload> _accepted = [];
+    private readonly Queue<Guid> _acceptedOrder = [];
+
+    public async Task RunAsync(CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            AdapterWorkerFrame frame = await channel.ReadNextAsync(cancellationToken).ConfigureAwait(false);
+            if (frame.Chunk is { } chunk)
+            {
+                await ReceiveAsync(chunk, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+            AdapterControlFrame command = frame.Control!;
+            if (command.IsResponse) throw new InvalidDataException("UnexpectedResponse");
+            if (command.MessageType == "Stop")
+            {
+                await ReplyAsync(command, "Stopped", new { }, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            try
+            {
+                if (command.MessageType == "Cancel")
+                {
+                    await CancelAsync(command, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+                AdapterFileAddress address = AdapterProtocolJson.ReadAddress(command.Payload, 2);
+                LocalWorkerPaths paths = roots.GetPaths(address.RootKey);
+                switch (command.MessageType)
+                {
+                    case "Stat":
+                        await ReplyAsync(command, "StatResult", new
+                        {
+                            rootKey = address.RootKey,
+                            revision = await RevisionAsync(paths.ResolveDirectory(address.Path), cancellationToken).ConfigureAwait(false)
+                        }, cancellationToken).ConfigureAwait(false);
+                        break;
+                    case "List": await ListAsync(command, address, paths, cancellationToken).ConfigureAwait(false); break;
+                    case "ReadRange": await ReadAsync(command, address, paths, cancellationToken).ConfigureAwait(false); break;
+                    case "Upload": await BeginUploadAsync(command, address, paths, cancellationToken).ConfigureAwait(false); break;
+                    default: throw new InvalidDataException("CapabilityUnavailable");
+                }
+            }
+            catch (Exception exception) when (IsOperationFailure(exception))
+            {
+                await ErrorAsync(command, exception, cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private async Task ListAsync(AdapterControlFrame command, AdapterFileAddress address, LocalWorkerPaths paths, CancellationToken token)
+    {
+        int size = command.Payload.GetProperty("pageSize").GetInt32();
+        if (size is < 1 or > 512) throw new InvalidDataException("InvalidPageSize");
+        int offset = 0;
+        if (command.Payload.TryGetProperty("cursor", out JsonElement cursor) && cursor.ValueKind == JsonValueKind.String)
+        {
+            string text = cursor.GetString()!;
+            if (text.Length > 8192) throw new InvalidDataException("InvalidCursor");
+            string[] parts = Encoding.UTF8.GetString(Convert.FromBase64String(text)).Split('\0');
+            if (parts.Length != 3 || parts[0] != address.RootKey || parts[1] != address.Path ||
+                !int.TryParse(parts[2], NumberStyles.None, CultureInfo.InvariantCulture, out offset) || offset < 0)
+                throw new InvalidDataException("InvalidCursor");
+        }
+        string directory = paths.ResolveDirectory(address.Path);
+        string[] children = Directory.EnumerateFileSystemEntries(directory).Order(StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item, StringComparer.Ordinal).Skip(offset).Take(size + 1).ToArray();
+        var entries = new List<object>(size);
+        foreach (string child in children.Take(size))
+        {
+            string relative = Path.GetRelativePath(paths.Root, child).Replace(Path.DirectorySeparatorChar, '/');
+            string resolved = paths.Resolve(relative);
+            bool isDirectory = Directory.Exists(resolved);
+            entries.Add(new
+            {
+                remoteId = relative,
+                relativePath = relative,
+                remoteRevision = await RevisionAsync(resolved, token).ConfigureAwait(false),
+                itemKind = isDirectory ? "Directory" : "File",
+                length = isDirectory ? (long?)null : new FileInfo(resolved).Length,
+                creationTime = new DateTimeOffset(File.GetCreationTimeUtc(resolved), TimeSpan.Zero),
+                lastWriteTime = new DateTimeOffset(File.GetLastWriteTimeUtc(resolved), TimeSpan.Zero),
+                isDeleted = false
+            });
+        }
+        bool complete = children.Length <= size;
+        await ReplyAsync(command, "DirectoryPage", new
+        {
+            rootKey = address.RootKey,
+            entries,
+            isComplete = complete,
+            cursor = complete ? null : Convert.ToBase64String(Encoding.UTF8.GetBytes(address.RootKey + "\0" + address.Path + "\0" +
+                checked(offset + entries.Count).ToString(CultureInfo.InvariantCulture)))
+        }, token).ConfigureAwait(false);
+    }
+
+    private async Task ReadAsync(AdapterControlFrame command, AdapterFileAddress address, LocalWorkerPaths paths, CancellationToken token)
+    {
+        long offset = command.Payload.GetProperty("offset").GetInt64();
+        long length = command.Payload.GetProperty("length").GetInt64();
+        if (offset < 0 || length is < 1 or > AdapterBinaryChunkV2Codec.MaximumChunkBytes) throw new InvalidDataException("InvalidRange");
+        string resolved = paths.Resolve(address.Path);
+        await using var input = new FileStream(resolved, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, FileOptions.Asynchronous);
+        if (command.Payload.TryGetProperty("expectedRevision", out JsonElement expected) && expected.ValueKind == JsonValueKind.String &&
+            expected.GetString() != await RevisionAsync(resolved, token).ConfigureAwait(false)) throw new InvalidDataException("RemoteConflict");
+        if (offset > input.Length || length > input.Length - offset) throw new InvalidDataException("InvalidRange");
+        input.Position = offset;
+        byte[] bytes = new byte[checked((int)length)];
+        await input.ReadExactlyAsync(bytes, token).ConfigureAwait(false);
+        Guid stream = Guid.NewGuid();
+        await ReplyAsync(command, "ReadRangeReady", new { rootKey = address.RootKey, streamId = stream, length }, token).ConfigureAwait(false);
+        await channel.SendChunkAsync(new(command.RequestId, arguments.InstanceId, arguments.WorkerSessionId, stream, offset, bytes, true)
+        { RootKey = address.RootKey }, token).ConfigureAwait(false);
+    }
+
+    private async Task BeginUploadAsync(AdapterControlFrame command, AdapterFileAddress address, LocalWorkerPaths paths, CancellationToken token)
+    {
+        AdapterOperationRequest operation = DecodeOperation(command);
+        AdapterProtocolJson.ValidateMutation(operation, requiresDestination: false);
+        long length = command.Payload.GetProperty("length").GetInt64();
+        Guid stream = command.Payload.GetProperty("streamId").GetGuid();
+        if (length < 0 || stream == Guid.Empty || _uploads.Count >= 4) throw new InvalidDataException("UploadLimit");
+        if (_uploads.Values.Any(pending => pending.Operation.OperationId == operation.OperationId)) throw new InvalidDataException("OperationInProgress");
+        string destination = paths.Resolve(address.Path);
+        string fingerprint = Convert.ToHexString(SHA256.HashData(AdapterProtocolJson.Encode(new { operation, length })));
+        bool replay = _accepted.TryGetValue(operation.OperationId, out AcceptedUpload? accepted);
+        if (replay && accepted!.Fingerprint != fingerprint) throw new InvalidDataException("OperationBindingMismatch");
+        // Until handle-bound replacement is enabled, existing destinations are preserved.
+        if (!replay && (operation.Preconditions?.ExpectedRevision is not null || File.Exists(destination) || Directory.Exists(destination)))
+            throw new InvalidDataException("RemoteConflict");
+        if (!Directory.Exists(Path.GetDirectoryName(destination))) throw new InvalidDataException("ParentNotFound");
+        var lease = new AdapterTransferLease(cache);
+        try
+        {
+            _uploads.Add(command.RequestId, new(command, operation, paths, fingerprint, replay,
+                new(command.RequestId, arguments.InstanceId, arguments.WorkerSessionId, stream, address.RootKey, 0, length), lease));
+        }
+        catch { await lease.DisposeAsync().ConfigureAwait(false); throw; }
+        await ReplyAsync(command, "UploadReady", new { rootKey = address.RootKey, operationId = operation.OperationId, streamId = stream }, token).ConfigureAwait(false);
+    }
+
+    private async Task ReceiveAsync(AdapterBinaryChunk chunk, CancellationToken token)
+    {
+        if (!_uploads.TryGetValue(chunk.RequestId, out PendingUpload? upload)) throw new InvalidDataException("UnexpectedChunk");
+        try
+        {
+            upload.Binding.Accept(chunk);
+            await upload.Lease.Stream.WriteAsync(chunk.Data, token).ConfigureAwait(false);
+            if (!upload.Binding.Completed) return;
+            upload.Lease.Stream.Position = 0;
+            string digest = Convert.ToHexString(await SHA256.HashDataAsync(upload.Lease.Stream, token).ConfigureAwait(false));
+            string? revision;
+            if (upload.Replay)
+            {
+                AcceptedUpload accepted = _accepted[upload.Operation.OperationId];
+                if (accepted.Digest != digest) throw new InvalidDataException("OperationBindingMismatch");
+                revision = accepted.Revision;
+            }
+            else
+            {
+                string destination = upload.Paths.Resolve(upload.Operation.Path);
+                upload.Lease.Stream.Position = 0;
+                string staged = Path.Combine(Path.GetDirectoryName(destination)!, ".mp-upload-" + Guid.NewGuid().ToString("N"));
+                try
+                {
+                    await using (var output = new FileStream(staged, FileMode.CreateNew, FileAccess.Write, FileShare.None, 64 * 1024, FileOptions.Asynchronous))
+                    {
+                        await upload.Lease.Stream.CopyToAsync(output, token).ConfigureAwait(false);
+                        await output.FlushAsync(token).ConfigureAwait(false);
+                    }
+                    token.ThrowIfCancellationRequested();
+                    upload.Paths.Resolve(upload.Operation.Path);
+                    File.Move(staged, destination, overwrite: false);
+                }
+                finally { File.Delete(staged); }
+                revision = await RevisionAsync(destination, token).ConfigureAwait(false);
+                _accepted.Add(upload.Operation.OperationId, new(upload.Fingerprint, digest, revision));
+                _acceptedOrder.Enqueue(upload.Operation.OperationId);
+                if (_acceptedOrder.Count > 256) _accepted.Remove(_acceptedOrder.Dequeue());
+            }
+            await upload.Lease.DisposeAsync().ConfigureAwait(false);
+            await ReplyAsync(upload.Command, "UploadComplete", new
+            {
+                rootKey = upload.Operation.RootKey,
+                operationId = upload.Operation.OperationId,
+                revision
+            }, token).ConfigureAwait(false);
+            _uploads.Remove(chunk.RequestId);
+        }
+        catch (Exception exception) when (IsOperationFailure(exception))
+        {
+            _uploads.Remove(chunk.RequestId);
+            await upload.Lease.DisposeAsync().ConfigureAwait(false);
+            await ErrorAsync(upload.Command, exception, token).ConfigureAwait(false);
+        }
+    }
+
+    private async Task CancelAsync(AdapterControlFrame cancel, CancellationToken token)
+    {
+        string root = cancel.Payload.GetProperty("rootKey").GetString() ?? throw new InvalidDataException("RootRequired");
+        roots.GetPaths(root);
+        Guid target = cancel.Payload.GetProperty("targetRequestId").GetGuid();
+        string status = "alreadyCompleted";
+        if (_uploads.TryGetValue(target, out PendingUpload? upload))
+        {
+            if (upload.Operation.RootKey != root) throw new InvalidDataException("CancelRootMismatch");
+            if (cancel.Payload.TryGetProperty("operationId", out JsonElement operation) && operation.ValueKind != JsonValueKind.Null &&
+                operation.GetGuid() != upload.Operation.OperationId) throw new InvalidDataException("CancelOperationMismatch");
+            _uploads.Remove(target);
+            await upload.Lease.CancelAsync().ConfigureAwait(false);
+            await ErrorAsync(upload.Command, new InvalidDataException("Canceled"), token).ConfigureAwait(false);
+            status = "canceled";
+        }
+        await ReplyAsync(cancel, "CancelAck", new { rootKey = root, targetRequestId = target, status }, token).ConfigureAwait(false);
+    }
+
+    private static AdapterOperationRequest DecodeOperation(AdapterControlFrame command) =>
+        AdapterProtocolJson.Decode<AdapterOperationRequest>(Encoding.UTF8.GetBytes(command.Payload.GetRawText()));
+
+    private static async Task<string?> RevisionAsync(string path, CancellationToken token)
+    {
+        if (Directory.Exists(path)) return "directory:" + File.GetLastWriteTimeUtc(path).Ticks.ToString(CultureInfo.InvariantCulture);
+        if (!File.Exists(path)) return null;
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, FileOptions.Asynchronous);
+        string digest = Convert.ToHexString(await SHA256.HashDataAsync(stream, token).ConfigureAwait(false));
+        return stream.Length.ToString(CultureInfo.InvariantCulture) + ":" + File.GetLastWriteTimeUtc(path).Ticks.ToString(CultureInfo.InvariantCulture) + ":" + digest;
+    }
+
+    private ValueTask ReplyAsync(AdapterControlFrame command, string type, object payload, CancellationToken token) =>
+        channel.SendAsync(type, command.RequestId, true, payload, token);
+
+    private static bool IsOperationFailure(Exception exception) => exception is IOException or InvalidDataException or ArgumentException or JsonException or UnauthorizedAccessException or FormatException or KeyNotFoundException;
+
+    private ValueTask ErrorAsync(AdapterControlFrame command, Exception exception, CancellationToken token)
+    {
+        string code = exception switch
+        {
+            InvalidDataException => exception.Message,
+            UnauthorizedAccessException => "AccessDenied",
+            FileNotFoundException or DirectoryNotFoundException => "SourceUnavailable",
+            IOException => "RetryableTransferFailure",
+            _ => "InvalidRequest"
+        };
+        JsonElement payload = command.Payload;
+        return ReplyAsync(command, "OperationError", new
+        {
+            code,
+            rootKey = payload.TryGetProperty("rootKey", out JsonElement root) && root.ValueKind == JsonValueKind.String ? root.GetString() : null,
+            operationId = payload.TryGetProperty("operationId", out JsonElement operation) && operation.ValueKind == JsonValueKind.String && operation.TryGetGuid(out Guid id) ? (Guid?)id : null
+        }, token);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        foreach (PendingUpload upload in _uploads.Values) await upload.Lease.DisposeAsync().ConfigureAwait(false);
+        _uploads.Clear();
+    }
+
+    private sealed record AcceptedUpload(string Fingerprint, string Digest, string? Revision);
+    private sealed record PendingUpload(AdapterControlFrame Command, AdapterOperationRequest Operation, LocalWorkerPaths Paths,
+        string Fingerprint, bool Replay, AdapterStreamBinding Binding, AdapterTransferLease Lease);
+}
