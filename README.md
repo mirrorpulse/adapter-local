@@ -39,8 +39,12 @@ Native contracts: [CreateFile](https://learn.microsoft.com/en-us/windows/win32/a
 and [handle-based mutation](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-setfileinformationbyhandle).
 
 Run `pwsh ./eng/verify.ps1` for locked restore, Release build, formatting, and
-real Worker process tests against disposable source directories. Provider release
-workflow migration is in progress; existing v1 releases remain unchanged.
+all 12 real Worker process tests against disposable source directories. Source
+and pull request CI run this profile natively on x64 and ARM64, then verify the
+signed self-contained payload; each job archives its test and runtime evidence.
+The Worker references the fixed published SDK package rather than a source copy.
+Provider release workflow migration is in progress; existing v1 releases remain
+unchanged.
 
 `eng/verify-release.ps1` builds one self-contained x64/ARM64 package, checks the
 included runtime and notices, signs it with an ephemeral test key, then runs the
@@ -70,7 +74,8 @@ verifies publisher trust at installation.
 The repository owner must configure environment reviewers, trusted branch/tag
 rules and signing-secret scope. YAML environment names alone do not enforce those
 protections. Existing organization secrets remain compatible until that migration.
-The current framework-dependent v1 runtime is retained by this release change.
+Existing published v1 packages remain framework-dependent. New source builds
+produce the self-contained v2 package described above.
 
 The release workflow also verifies the newly signed candidate using MirrorPulse
 16c6742 and real Local/WebDAV/SMB/FTP/SFTP Host/Worker fixtures on a disposable

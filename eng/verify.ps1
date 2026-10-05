@@ -3,7 +3,7 @@ param()
 $ErrorActionPreference = "Stop"
 & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'restore-adapter-sdk.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Pinned SDK verification failed.' }
-$projects = @("src/MirrorPulse.Adapter.Local.Worker/MirrorPulse.Adapter.Local.Worker.csproj", "tests/MirrorPulse.Adapter.Local.Worker.Tests/MirrorPulse.Adapter.Local.Worker.Tests.csproj")
+$projects = @("src/MirrorPulse.Adapter.Local.Worker/MirrorPulse.Adapter.Local.Worker.csproj", "tests/MirrorPulse.Adapter.Local.Worker.Tests/MirrorPulse.Adapter.Local.Worker.Tests.csproj", "tools/MirrorPulse.Adapter.Local.Conformance/MirrorPulse.Adapter.Local.Conformance.csproj")
 foreach ($project in $projects) {
     & dotnet restore $project --locked-mode
     if ($LASTEXITCODE -ne 0) { throw "Restore failed for $project." }
@@ -14,3 +14,8 @@ foreach ($project in $projects) {
 }
 & dotnet test $projects[1] --configuration Release --no-build --no-restore --logger trx --results-directory artifacts/test-results
 if ($LASTEXITCODE -ne 0) { throw 'Local process conformance failed.' }
+[xml]$trx = Get-Content -LiteralPath (@(Get-ChildItem -LiteralPath artifacts/test-results -Filter '*.trx' | Sort-Object LastWriteTimeUtc -Descending)[0].FullName) -Raw
+$counts = $trx.TestRun.ResultSummary.Counters
+if ($counts.total -ne 12 -or $counts.executed -ne 12 -or $counts.passed -ne 12 -or $counts.notExecuted -ne 0) {
+    throw 'All twelve real Local process cases must execute without skips.'
+}
