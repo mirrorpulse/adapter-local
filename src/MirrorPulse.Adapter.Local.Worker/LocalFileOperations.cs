@@ -8,7 +8,7 @@ using MirrorPulse.Adapter.Sdk;
 namespace MirrorPulse.Adapter.Local.Worker;
 
 /// <summary>Conditional operations retain ordinary Windows sharing locks through the native mutation.</summary>
-internal static class LocalFileOperations
+internal static partial class LocalFileOperations
 {
     public static async Task<string?> RevisionAsync(LocalWorkerPaths paths, string relative, CancellationToken token)
     {

@@ -18,6 +18,6 @@ foreach ($project in $projects) {
 if ($LASTEXITCODE -ne 0) { throw 'Local process conformance failed.' }
 [xml]$trx = Get-Content -LiteralPath (@(Get-ChildItem -LiteralPath artifacts/test-results -Filter '*.trx' | Sort-Object LastWriteTimeUtc -Descending)[0].FullName) -Raw
 $counts = $trx.TestRun.ResultSummary.Counters
-if ($counts.total -ne 12 -or $counts.executed -ne 12 -or $counts.passed -ne 12 -or $counts.notExecuted -ne 0) {
-    throw 'All twelve real Local process cases must execute without skips.'
+if ($counts.total -ne 19 -or $counts.executed -ne 19 -or $counts.passed -ne 19 -or $counts.notExecuted -ne 0) {
+    throw 'All twelve original Local process cases and seven directory observation cases must execute without skips.'
 }
