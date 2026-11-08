@@ -140,8 +140,9 @@ internal static partial class LocalFileOperations
             await CheckpointAsync(LocalAtomicDirectoryCheckpoint.AfterParentStaged, token).ConfigureAwait(false);
             // Transacted directory handles do not exclude external child creation.
             // Once every original parent is staged, new names are excluded. Check
-            // the retained nontransacted objects then, before producing a receipt,
-            // so even an already-removed unowned child cannot be adopted.
+            // these limited native signals before producing experimental evidence.
+            // They do not prove namespace history: the transient-child test shows
+            // an unowned create/delete can leave both observations unchanged.
             foreach (var entry in admission.Entries.Where(entry => entry.Original.IsDirectory))
                 if (AtomicDirectoryNative.ReadFileUsn(originalDirectories[entry.Original.Path]) != entry.OriginalFileUsn ||
                     AtomicDirectoryNative.ReadChangeTime(originalDirectories[entry.Original.Path]) != originalChangeTimes[entry.Original.Path])
