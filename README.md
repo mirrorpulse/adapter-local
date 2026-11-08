@@ -94,3 +94,8 @@ Run `pwsh ./eng/verify.ps1` and `pwsh ./eng/verify-release.ps1` for source and
 signed payload checks. Existing v1 releases remain unchanged; release evidence
 records the selected version, source SHA, payload hash, native runtime and trust
 mode so a tested preview cannot be confused with an older stable package.
+
+The [original-directory boundary review](docs/original-directory-effects.md)
+describes bounded read-only admission and the isolated native qualification
+tool. The tool identifies a remaining original-parent history gap; it does not
+enable recursive effects or introduce transactions into the shipping Worker.

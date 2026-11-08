@@ -1,4 +1,4 @@
-# Original directory admission and remaining atomic effect boundary
+# Original directory admission and atomic boundary qualification
 
 This branch adds bounded read-only observations of an original Local directory
 tree. It does not enable recursive deletion, advertise
@@ -60,3 +60,47 @@ The seven added tests retain every original Worker process case. They check
 unchanged observations and refusal after content change, child addition/removal,
 same-path tree replacement, foreign admission and foreign root. Neither those
 tests nor the SDK shape validators close the full recursive-directory feature.
+
+## Disposable NTFS transaction experiment
+
+`tools/MirrorPulse.Adapter.Local.DirectoryEffectsProbe` is a non-packable native
+qualification tool. It compiles the existing read-only path/observation boundary
+as linked source; the production Worker never references the tool or its native
+transaction code. Its mutation entry points require an explicitly marked,
+GUID-owned temporary fixture with fixed `source` and `state` directories. They
+cannot be used against ordinary Local sources. The probe always reports
+`qualifiedForOriginalDirectoryEffects: false`.
+
+Within that fixture the experiment admits all original operation IDs, native
+identities, revisions and positive file USNs. It stages leaf-first removals and
+an immutable, bounded receipt under one NTFS transaction, using a separate
+persistent directory on the same volume. An uncommitted exception or actual
+process exit rolls back all originals. A committed effect survives a lost reply;
+a new process reads the identical receipt without touching a later same-path
+tree. This receipt is experimental evidence, not an accepted SDK parent witness
+or permission for the Host to ACK an original operation.
+
+The thirty characterization cases exercise actual process exit before and after
+commit, real independent contenders, new-child refusal and rollback, unchanged
+replay, changed bytes/metadata/inventory/generation, foreign original authority,
+damaged receipts, cancellation, explicit opt-in and separate state ownership.
+Every one of the twelve original Worker process and seven observation cases is
+retained; `eng/verify.ps1` requires all49 cases to execute without skips.
+
+One characterization deliberately records a qualification failure: after the
+transaction opens the original directory, an external create followed by delete
+can leave its file USN and observed change time unchanged. The raw transaction
+can still commit. Keeping ordinary directory handles and re-reading those values
+after parent staging does not establish the missing history. Accordingly the
+experiment is not promoted into the Worker and does not enable
+`original-directory-effects-v1`. The regression also verifies that the shipping
+Worker assembly contains no transaction primitive. Previously observed failed
+qualification results remain in the product's local evidence, rather than being
+reclassified as recursive-feature acceptance.
+
+Completing the feature still requires a reviewed backend mechanism that proves
+original-parent history and complete owned child effects, durable wire receipts,
+the Host's sealed dependency/ACK rules, reviewed SDK consumption, and a real
+organization-signed Host/Worker test. No new administrator requirement, volume
+journal lifecycle operation, recursive-delete fallback or production TxF
+dependency is introduced by this experiment.

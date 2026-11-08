@@ -5,7 +5,7 @@ $ErrorActionPreference = "Stop"
 & (Join-Path $PSScriptRoot 'verify-adapter-publishing.ps1')
 & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'restore-adapter-sdk.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Pinned SDK verification failed.' }
-$projects = @("src/MirrorPulse.Adapter.Local.Worker/MirrorPulse.Adapter.Local.Worker.csproj", "tests/MirrorPulse.Adapter.Local.Worker.Tests/MirrorPulse.Adapter.Local.Worker.Tests.csproj", "tools/MirrorPulse.Adapter.Local.Conformance/MirrorPulse.Adapter.Local.Conformance.csproj")
+$projects = @("src/MirrorPulse.Adapter.Local.Worker/MirrorPulse.Adapter.Local.Worker.csproj", "tests/MirrorPulse.Adapter.Local.Worker.Tests/MirrorPulse.Adapter.Local.Worker.Tests.csproj", "tools/MirrorPulse.Adapter.Local.Conformance/MirrorPulse.Adapter.Local.Conformance.csproj", "tools/MirrorPulse.Adapter.Local.DirectoryEffectsProbe/MirrorPulse.Adapter.Local.DirectoryEffectsProbe.csproj")
 foreach ($project in $projects) {
     & dotnet restore $project --locked-mode
     if ($LASTEXITCODE -ne 0) { throw "Restore failed for $project." }
@@ -18,6 +18,6 @@ foreach ($project in $projects) {
 if ($LASTEXITCODE -ne 0) { throw 'Local process conformance failed.' }
 [xml]$trx = Get-Content -LiteralPath (@(Get-ChildItem -LiteralPath artifacts/test-results -Filter '*.trx' | Sort-Object LastWriteTimeUtc -Descending)[0].FullName) -Raw
 $counts = $trx.TestRun.ResultSummary.Counters
-if ($counts.total -ne 19 -or $counts.executed -ne 19 -or $counts.passed -ne 19 -or $counts.notExecuted -ne 0) {
-    throw 'All twelve original Local process cases and seven directory observation cases must execute without skips.'
+if ($counts.total -ne 49 -or $counts.executed -ne 49 -or $counts.passed -ne 49 -or $counts.notExecuted -ne 0) {
+    throw 'All twelve original Local process, seven directory observation and thirty isolated native characterization cases must execute without skips.'
 }

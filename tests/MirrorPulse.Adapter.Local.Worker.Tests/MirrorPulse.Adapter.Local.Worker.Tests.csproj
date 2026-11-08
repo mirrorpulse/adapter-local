@@ -5,6 +5,7 @@
   <ItemGroup>
     <PackageReference Include="MSTest" />
     <ProjectReference Include="../../src/MirrorPulse.Adapter.Local.Worker/MirrorPulse.Adapter.Local.Worker.csproj" />
+    <ProjectReference Include="../../tools/MirrorPulse.Adapter.Local.DirectoryEffectsProbe/MirrorPulse.Adapter.Local.DirectoryEffectsProbe.csproj" Aliases="Probe" />
     <Using Include="Microsoft.VisualStudio.TestTools.UnitTesting" />
   </ItemGroup>
 </Project>
