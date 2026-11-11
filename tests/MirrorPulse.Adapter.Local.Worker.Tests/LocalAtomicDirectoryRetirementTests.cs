@@ -92,10 +92,10 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
             File.WriteAllText(Path.Combine(Tree, "top.bin"), "original top bytes");
             Peer = Path.Combine(source, "peer.bin"); File.WriteAllText(Peer, "unrelated peer"); Paths = new(source);
         }
-        internal Task<LocalAtomicDirectoryAdmission> PrepareAsync()
+        internal Task<LocalAtomicDirectoryAdmission> PrepareAsync(bool fenceParentNamespace = false)
         {
             var operations = OriginalPaths.ToDictionary(path => path, _ => Guid.NewGuid(), StringComparer.Ordinal);
-            return ProbeFileOperations.PrepareAtomicDirectoryRetirementAsync(Paths, Guid.NewGuid(), Guid.NewGuid(), "docs", "tree", operations, State, true, CancellationToken.None);
+            return ProbeFileOperations.PrepareAtomicDirectoryRetirementAsync(Paths, Guid.NewGuid(), Guid.NewGuid(), "docs", "tree", operations, State, true, CancellationToken.None, fenceParentNamespace);
         }
         internal Task<LocalAtomicDirectoryReceipt> RetireAsync(LocalAtomicDirectoryAdmission admission,
             Func<LocalAtomicDirectoryCheckpoint, CancellationToken, ValueTask>? checkpoint = null) =>

@@ -74,6 +74,12 @@ internal static class AtomicDirectoryNative
         bool removed = directory ? RemoveDirectoryTransactedW(path, transaction) : DeleteFileTransactedW(path, transaction);
         if (!removed) throw new Win32Exception(Marshal.GetLastPInvokeError());
     }
+    internal static void FenceNamespace(string source, string temporary, SafeFileHandle transaction)
+    {
+        if (!MoveFileTransactedW(source, temporary, IntPtr.Zero, IntPtr.Zero, 0, transaction) ||
+            !MoveFileTransactedW(temporary, source, IntPtr.Zero, IntPtr.Zero, 0, transaction))
+            throw new Win32Exception(Marshal.GetLastPInvokeError());
+    }
     internal static void WriteReceipt(string path, byte[] payload, SafeFileHandle transaction)
     {
         using var handle = CreateFileTransactedW(path, 0x40000000, 0, IntPtr.Zero, 1, 0x00200000, IntPtr.Zero, transaction, IntPtr.Zero, IntPtr.Zero);
@@ -121,6 +127,9 @@ internal static class AtomicDirectoryNative
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [return: MarshalAs(UnmanagedType.Bool)] private static extern bool RemoveDirectoryTransactedW(string path, SafeFileHandle transaction);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [return: MarshalAs(UnmanagedType.Bool)] private static extern bool MoveFileTransactedW(string source, string target, IntPtr progress, IntPtr data, uint flags, SafeFileHandle transaction);
     [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [return: MarshalAs(UnmanagedType.Bool)] private static extern bool DeviceIoControl(SafeFileHandle handle, uint code, byte[] input, int inputLength, byte[] output, int outputLength, out int returned, IntPtr overlapped);
