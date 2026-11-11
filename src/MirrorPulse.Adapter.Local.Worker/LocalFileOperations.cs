@@ -8,8 +8,15 @@ using MirrorPulse.Adapter.Sdk;
 namespace MirrorPulse.Adapter.Local.Worker;
 
 /// <summary>Conditional operations retain ordinary Windows sharing locks through the native mutation.</summary>
-internal static class LocalFileOperations
+internal static partial class LocalFileOperations
 {
+    internal static string RevisionGeneration(SafeFileHandle handle)
+    {
+        Native.ObjectIdentity identity = Native.Identity(handle);
+        if (identity.FileId == Guid.Empty) throw new InvalidDataException("ObjectGenerationUnavailable");
+        return FormattableString.Invariant($"native-v2:{identity.Volume:X16}:{identity.FileId:N}");
+    }
+
     public static async Task<string?> RevisionAsync(LocalWorkerPaths paths, string relative, CancellationToken token)
     {
         string path = paths.ResolveDirectory(relative);
@@ -194,10 +201,11 @@ internal static class LocalFileOperations
         public async Task<string> RevisionAsync(CancellationToken token)
         {
             string time = ((ulong)_information.WriteTime.High << 32 | _information.WriteTime.Low).ToString(CultureInfo.InvariantCulture);
-            if (IsDirectory) return "directory:" + time;
+            string generation = RevisionGeneration(_handle);
+            if (IsDirectory) return generation + ":directory:" + time;
             Stream!.Position = 0;
             string digest = Convert.ToHexString(await SHA256.HashDataAsync(Stream, token).ConfigureAwait(false));
-            return Stream.Length.ToString(CultureInfo.InvariantCulture) + ":" + time + ":" + digest;
+            return generation + ":file:" + Stream.Length.ToString(CultureInfo.InvariantCulture) + ":" + time + ":" + digest;
         }
 
         public void Dispose()
@@ -222,6 +230,13 @@ internal static class LocalFileOperations
         {
             if (!GetFileInformationByHandle(handle, out FileInformation information)) throw new NativeFileException(Marshal.GetLastPInvokeError());
             return information;
+        }
+
+        public static ObjectIdentity Identity(SafeFileHandle handle)
+        {
+            if (!GetFileInformationByHandleEx(handle, 18, out ObjectIdentity identity, 24))
+                throw new NativeFileException(Marshal.GetLastPInvokeError());
+            return identity;
         }
 
         public static void Rename(SafeFileHandle handle, string destination)
@@ -249,6 +264,9 @@ internal static class LocalFileOperations
         internal struct FileTime { public uint Low; public uint High; }
 
         [StructLayout(LayoutKind.Sequential)]
+        internal struct ObjectIdentity { public ulong Volume; public Guid FileId; }
+
+        [StructLayout(LayoutKind.Sequential)]
         internal struct FileInformation
         {
             public uint Attributes;
@@ -271,6 +289,11 @@ internal static class LocalFileOperations
         [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool GetFileInformationByHandle(SafeFileHandle handle, out FileInformation information);
+
+        [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetFileInformationByHandleEx(SafeFileHandle handle, int informationClass, out ObjectIdentity information, uint length);
 
         [DllImport("kernel32.dll", ExactSpelling = true, SetLastError = true)]
         [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
