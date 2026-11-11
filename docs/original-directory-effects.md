@@ -85,7 +85,8 @@ commit, real independent contenders, new-child refusal and rollback, unchanged
 replay, changed bytes/metadata/inventory/generation, foreign original authority,
 damaged receipts, cancellation, explicit opt-in and separate state ownership.
 Every one of the twelve original Worker process and seven observation cases is
-retained; `eng/verify.ps1` requires all49 cases to execute without skips.
+retained; `eng/verify.ps1` now requires all59 cases, including the ten additional
+parent-fence cases below, to execute without skips.
 
 One characterization deliberately records a qualification failure: after the
 transaction opens the original directory, an external create followed by delete
@@ -104,3 +105,37 @@ the Host's sealed dependency/ACK rules, reviewed SDK consumption, and a real
 organization-signed Host/Worker test. No new administrator requirement, volume
 journal lifecycle operation, recursive-delete fallback or production TxF
 dependency is introduced by this experiment.
+
+## Independent parent-namespace fence characterization
+
+The same non-packable tool has a separate `--parent-fence` entry point. Each
+invocation creates its own marked GUID fixture and rolls back every transaction.
+It does not alter the original retirement experiment, admit a production source,
+enable a capability, or manufacture a child-effect receipt.
+
+Ten actual independent-process cases compare read-only parent ownership with a
+staged rename-away/rename-back, using five contenders: ordinary direct-child and
+nested-child paths, a preopened root directory handle, a preopened nested
+directory handle, and a preopened writable file. A READY/GO exchange proves that
+the original contender handle exists before transaction staging. The directory
+handle cases use documented
+[relative object names](https://learn.microsoft.com/en-us/windows/win32/api/ntdef/ns-ntdef-_object_attributes)
+with [NtCreateFile](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntcreatefile),
+so a stale path lookup cannot substitute for the original descendant owner.
+
+Read-only ownership permits all five contenders. Successful namespace staging
+rejects direct-path, nested-path and preopened-root creation with native
+ERROR_TRANSACTIONAL_CONFLICT6800. A preopened nested handle or writable file
+instead makes staging itself fail with ERROR_ACCESS_DENIED5; the external
+create/delete or original-byte write is preserved. An admission failure must
+therefore stop before any effect. The tests require real refusals, original
+names restored, no transient residue and no committed transaction or production
+qualification. They retain every original49 case, including the existing
+transient-history gap regression.
+
+This narrows a possible final-check boundary; it does not prove complete
+original-parent history, owned child transitions, atomic effect/receipt commit,
+crash recovery, released SDK integration or signed recursive acceptance. The
+shipping Worker still contains no transaction primitive. TxF availability and
+filesystem limits remain explicit; these results do not justify a fallback
+that omits the original history or treats an external write as an owned effect.

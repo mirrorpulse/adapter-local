@@ -4,6 +4,7 @@ using System.Text.Json;
 using MirrorPulse.Adapter.Local.Worker;
 using MirrorPulse.Adapter.Sdk;
 
+if (args.Length > 0 && args[0] == "--parent-fence") return await LocalAtomicParentFenceProbe.RunAsync(args[1..]);
 if (args.Length < 2 || args[0] is not ("--retire" or "--create-extra" or "--delete-original" or "--overwrite-original")) return 2;
 string root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(args[1]));
 string name = Path.GetFileName(root); const string prefix = "mp-local-atomic-";
