@@ -17,6 +17,13 @@ foreach (Type type in new[] { typeof(LocalWorkerProtocolTests), typeof(LocalWork
         Console.WriteLine("Passed: " + method.Name);
     }
 }
-if (count != 12) throw new InvalidDataException("The complete Local conformance profile must execute without skips.");
+var generations = new LocalWorkerGenerationRevisionTests();
+foreach (bool directory in new[] { false, true })
+{
+    await generations.OriginalConditionalDeleteCannotDeleteALaterObjectWithIdenticalBytesAndTimestamp(directory);
+    count++;
+    Console.WriteLine("Passed: OriginalConditionalDeletePreservesLater" + (directory ? "Directory" : "File") + "Generation");
+}
+if (count != 14) throw new InvalidDataException("The complete Local conformance profile must execute without skips.");
 Console.WriteLine("Local conformance passed with the Worker private runtime: " + count);
 return 0;

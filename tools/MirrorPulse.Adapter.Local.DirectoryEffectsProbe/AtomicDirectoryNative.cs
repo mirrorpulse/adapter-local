@@ -29,9 +29,10 @@ internal static class AtomicDirectoryNative
         internal async Task<string> RevisionAsync(CancellationToken token)
         {
             string time = ((ulong)_information.WriteTime.High << 32 | _information.WriteTime.Low).ToString(CultureInfo.InvariantCulture);
-            if (IsDirectory) return "directory:" + time;
+            string generation = LocalFileOperations.RevisionGeneration(Handle);
+            if (IsDirectory) return generation + ":directory:" + time;
             _stream!.Position = 0;
-            return _stream.Length.ToString(CultureInfo.InvariantCulture) + ":" + time + ":" +
+            return generation + ":file:" + _stream.Length.ToString(CultureInfo.InvariantCulture) + ":" + time + ":" +
                 Convert.ToHexString(await SHA256.HashDataAsync(_stream, token).ConfigureAwait(false));
         }
         public void Dispose() { _stream?.Dispose(); Handle.Dispose(); }
