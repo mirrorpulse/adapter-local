@@ -69,6 +69,28 @@ sampled journal end along with the original admission fingerprint.
 The Local adapter gate requires all 92 cases, including malformed journal page
 and unavailable original range cases.
 
-The experiment still runs in disposable fixtures. A live Local Worker needs
-wire admission and separately durable typed child-effect receipts, plus
-end-to-end signed qualification with the Host.
+## Whole-batch Host authorization
+
+An optional native authorization now binds the version 3 original admission,
+instance, admission ID and Host sealed manifest before source effects. The
+authorization and every stable operation claim share one reservation transaction.
+They are immutable: another admission or manifest cannot reuse those operations.
+Missing or changed retained claims stop execution. An authorization cannot use
+the legacy path without its binding. This private native authorization is
+separate from the SDK wire fingerprint; a future Worker must correlate the two
+admissions before granting source authority.
+
+The source transaction commits all original removals and one receipt containing
+that authorization. Individual child effects are never reported accepted before
+the whole batch commits. Twelve additional tests cover invalid authorization,
+all four pre-commit effect cuts, real process death during authorization staging
+and after its commit, process death during the source transaction, lost reply
+recovery preserving a successor, manifest rebinding, missing receipt binding,
+cross-admission operation reuse and missing operation claims. The gate requires
+all 104 cases, retaining the original 92 without skips.
+
+The experiment still runs in disposable fixtures. Shipping integration needs
+public wire admission, a separately negotiated whole-batch deletion request,
+Host durable batch acceptance and official journal ACK, plus signed end-to-end
+qualification. A backend that supports individual child-effect requests must
+instead provide a genuinely durable receipt for each effect.

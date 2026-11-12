@@ -5,7 +5,7 @@ using MirrorPulse.Adapter.Local.Worker;
 using MirrorPulse.Adapter.Sdk;
 
 if (args.Length > 0 && args[0] == "--parent-fence") return await LocalAtomicParentFenceProbe.RunAsync(args[1..]);
-if (args.Length < 2 || args[0] is not ("--retire" or "--create-extra" or "--delete-original" or
+if (args.Length < 2 || args[0] is not ("--retire" or "--retire-authorized" or "--create-extra" or "--delete-original" or
     "--overwrite-original" or "--create-transient-peer")) return 2;
 string root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(args[1]));
 string name = Path.GetFileName(root); const string prefix = "mp-local-atomic-";
@@ -36,13 +36,23 @@ try
     if (!File.Exists(admissionPath) || (File.GetAttributes(admissionPath) & FileAttributes.ReparsePoint) != 0 ||
         new FileInfo(admissionPath).Length is 0 or > 16 * 1024 * 1024) return 2;
     var admission = AdapterProtocolJson.Decode<LocalAtomicDirectoryAdmission>(await File.ReadAllBytesAsync(admissionPath));
+    LocalAtomicDirectoryAuthorization? authorization = null;
+    if (args[0] == "--retire-authorized")
+    {
+        string authorizationPath = Path.Combine(state, admissionId.ToString("N") + ".authorization.json");
+        string requestPath = Path.Combine(state, admissionId.ToString("N") + ".authorization-request.json");
+        if (File.Exists(requestPath)) authorizationPath = requestPath;
+        if (!File.Exists(authorizationPath) || (File.GetAttributes(authorizationPath) & FileAttributes.ReparsePoint) != 0 ||
+            new FileInfo(authorizationPath).Length is 0 or > 65536) return 2;
+        authorization = AdapterProtocolJson.Decode<LocalAtomicDirectoryAuthorization>(await File.ReadAllBytesAsync(authorizationPath));
+    }
     LocalAtomicDirectoryCheckpoint? cut = args.Length == 4 ? Enum.Parse<LocalAtomicDirectoryCheckpoint>(args[3], ignoreCase: false) : null;
     using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
     var receipt = await LocalFileOperations.RetireAtomicDirectoryAsync(new(source), admission, state, true, (point, _) =>
     {
         if (point == cut) Environment.Exit(73); // Deliberately bypass all managed finally blocks and lose the return.
         return ValueTask.CompletedTask;
-    }, deadline.Token);
+    }, deadline.Token, authorization);
     Console.WriteLine(JsonSerializer.Serialize(new
     {
         admissionId = receipt.AdmissionId,

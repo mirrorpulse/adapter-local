@@ -10,10 +10,29 @@ internal sealed record LocalAtomicDirectoryAdmission(int Version, Guid InstanceI
     string StateDirectoryIdentity, LocalDirectoryTreeObservation Original, IReadOnlyList<LocalAtomicDirectoryEntry> Entries, string Fingerprint,
     LocalAtomicDirectoryHistory? History = null);
 internal sealed record LocalAtomicDirectoryEffect(Guid OperationId, string Path, string NativeIdentity, long OriginalFileUsn, string OriginalRevision);
+// Native authorization is separate from the optional SDK wire. A future Worker
+// must correlate its public admission with this retained native admission.
+internal sealed record LocalAtomicDirectoryAuthorization(Guid InstanceId, Guid AdmissionId, string NativeAdmissionFingerprint,
+    string ManifestFingerprint, string RequestFingerprint)
+{
+    internal string CalculateFingerprint() => Convert.ToHexString(SHA256.HashData(AdapterProtocolJson.Encode(new
+    {
+        kind = "NativeAtomicDirectoryAuthorization",
+        version = 1,
+        InstanceId,
+        AdmissionId,
+        NativeAdmissionFingerprint,
+        ManifestFingerprint,
+    })));
+}
 internal sealed record LocalAtomicDirectoryReceipt(int Version, Guid InstanceId, Guid AdmissionId, Guid TransactionId,
     string AdmissionFingerprint, IReadOnlyList<LocalAtomicDirectoryEffect> Effects, DateTimeOffset PreparedAt,
-    long? HistoryVerifiedThrough = null);
-internal enum LocalAtomicDirectoryCheckpoint { AfterOriginalsLocked, AfterFirstChildStaged, AfterParentStaged, AfterReceiptStaged, AfterCommit }
+    long? HistoryVerifiedThrough = null, LocalAtomicDirectoryAuthorization? Authorization = null);
+internal enum LocalAtomicDirectoryCheckpoint
+{
+    AfterOriginalsLocked, AfterFirstChildStaged, AfterParentStaged, AfterReceiptStaged, AfterCommit,
+    AfterAuthorizationStaged, AfterAuthorizationCommitted
+}
 
 internal static partial class LocalFileOperations
 {
@@ -81,7 +100,8 @@ internal static partial class LocalFileOperations
     /// <remarks>Not a production effect or SDK receipt: directory USNs do not establish complete original-parent history.</remarks>
     internal static async Task<LocalAtomicDirectoryReceipt> RetireAtomicDirectoryAsync(LocalWorkerPaths paths,
         LocalAtomicDirectoryAdmission admission, string stateDirectory, bool enableExperimentalNtfsTransactions,
-        Func<LocalAtomicDirectoryCheckpoint, CancellationToken, ValueTask>? checkpoint, CancellationToken token)
+        Func<LocalAtomicDirectoryCheckpoint, CancellationToken, ValueTask>? checkpoint, CancellationToken token,
+        LocalAtomicDirectoryAuthorization? authorization = null)
     {
         RequireExperimentalAtomicDirectoryBackend(enableExperimentalNtfsTransactions);
         RequireOwnedProbeFixture(paths);
@@ -105,9 +125,10 @@ internal static partial class LocalFileOperations
         var sourceRootInfo = Native.Information(root.Handle); var stateInfo = Native.Information(stateObject.Handle);
         if (Identity(sourceRootInfo) != admission.SourceRootIdentity || Identity(stateInfo) != admission.StateDirectoryIdentity ||
             sourceRootInfo.Volume != stateInfo.Volume) throw new InvalidDataException("AtomicDirectorySourceOrStateGenerationChanged");
+        await RequireAtomicAuthorizationAsync(admission, authorization, state, checkpoint, token).ConfigureAwait(false);
         // A matching committed receipt is historical evidence only. In particular,
         // replay never opens or mutates a later tree at the same source path.
-        if (File.Exists(receiptPath)) return ReadAtomicReceipt(admission, await ReadAtomicEvidenceAsync(receiptPath, token).ConfigureAwait(false));
+        if (File.Exists(receiptPath)) return ReadAtomicReceipt(admission, await ReadAtomicEvidenceAsync(receiptPath, token).ConfigureAwait(false), authorization);
         token.ThrowIfCancellationRequested();
         string source = paths.ResolveDirectory(admission.Original.Path);
         string parentPath = Path.GetDirectoryName(source)!;
@@ -210,7 +231,7 @@ internal static partial class LocalFileOperations
                     AtomicDirectoryNative.ReadChangeTime(originalDirectories[entry.Original.Path]) != originalChangeTimes[entry.Original.Path])
                     throw new InvalidDataException("UnownedOriginalDirectoryJournalChange");
             var receipt = new LocalAtomicDirectoryReceipt(admission.Version, admission.InstanceId, admission.AdmissionId, AtomicDirectoryNative.Id(transaction),
-                admission.Fingerprint, new ReadOnlyCollection<LocalAtomicDirectoryEffect>(effects), DateTimeOffset.UtcNow, historyVerifiedThrough);
+                admission.Fingerprint, new ReadOnlyCollection<LocalAtomicDirectoryEffect>(effects), DateTimeOffset.UtcNow, historyVerifiedThrough, authorization);
             AtomicDirectoryNative.WriteReceipt(receiptPath, AtomicPayload(receipt), transaction);
             await CheckpointAsync(LocalAtomicDirectoryCheckpoint.AfterReceiptStaged, token).ConfigureAwait(false);
             token.ThrowIfCancellationRequested();
@@ -218,7 +239,7 @@ internal static partial class LocalFileOperations
             // Once committed, cancellation or a lost reply cannot roll back the
             // source. Both effect and receipt already share their durable boundary.
             await CheckpointAsync(LocalAtomicDirectoryCheckpoint.AfterCommit, CancellationToken.None).ConfigureAwait(false);
-            var readback = ReadAtomicReceipt(admission, await ReadAtomicEvidenceAsync(receiptPath, CancellationToken.None).ConfigureAwait(false));
+            var readback = ReadAtomicReceipt(admission, await ReadAtomicEvidenceAsync(receiptPath, CancellationToken.None).ConfigureAwait(false), authorization);
             if (!AtomicPayload(readback).AsSpan().SequenceEqual(AtomicPayload(receipt)))
                 throw new InvalidDataException("CommittedAtomicDirectoryReceiptChanged");
             return readback;
@@ -320,6 +341,46 @@ internal static partial class LocalFileOperations
     private static string AtomicFingerprint(LocalAtomicDirectoryAdmission admission) =>
         Convert.ToHexString(SHA256.HashData(AtomicPayload(admission with { Fingerprint = string.Empty })));
 
+    private static async Task RequireAtomicAuthorizationAsync(LocalAtomicDirectoryAdmission admission,
+        LocalAtomicDirectoryAuthorization? authorization, string state,
+        Func<LocalAtomicDirectoryCheckpoint, CancellationToken, ValueTask>? checkpoint, CancellationToken token)
+    {
+        string path = Path.Combine(state, admission.AdmissionId.ToString("N") + ".authorization.json");
+        var claims = admission.Entries.Select(entry => Path.Combine(state, "operation-" + entry.OperationId.ToString("N") + ".claim.json")).ToArray();
+        if (authorization is null)
+        {
+            if (File.Exists(path) || claims.Any(File.Exists)) throw new InvalidDataException("OriginalAtomicDirectoryAuthorizationRequired");
+            return;
+        }
+        static bool Digest(string value) => value is { Length: 64 } &&
+            value.All(character => character is >= '0' and <= '9' or >= 'A' and <= 'F');
+        if (admission.Version != 3 || admission.History is null || authorization.InstanceId != admission.InstanceId ||
+            authorization.AdmissionId != admission.AdmissionId || authorization.NativeAdmissionFingerprint != admission.Fingerprint ||
+            !Digest(authorization.ManifestFingerprint) || !Digest(authorization.RequestFingerprint) ||
+            authorization.RequestFingerprint != authorization.CalculateFingerprint())
+            throw new InvalidDataException("OriginalAtomicDirectoryAuthorizationInvalid");
+        byte[] payload = AtomicPayload(authorization);
+        if (!File.Exists(path))
+        {
+            // An interrupted write must not leave a partial authorization. Persist
+            // this immutable reservation before attempting any source effects.
+            token.ThrowIfCancellationRequested();
+            if (claims.Any(File.Exists)) throw new InvalidDataException("OriginalAtomicDirectoryOperationAlreadyOwned");
+            using var transaction = AtomicDirectoryNative.Begin();
+            foreach (string claim in claims) AtomicDirectoryNative.WriteReceipt(claim, payload, transaction);
+            AtomicDirectoryNative.WriteReceipt(path, payload, transaction);
+            if (checkpoint is not null) await checkpoint(LocalAtomicDirectoryCheckpoint.AfterAuthorizationStaged, token).ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
+            AtomicDirectoryNative.Commit(transaction);
+            if (checkpoint is not null) await checkpoint(LocalAtomicDirectoryCheckpoint.AfterAuthorizationCommitted, token).ConfigureAwait(false);
+        }
+        if (!(await ReadAtomicEvidenceAsync(path, token).ConfigureAwait(false)).AsSpan().SequenceEqual(payload))
+            throw new InvalidDataException("OriginalAtomicDirectoryAuthorizationChanged");
+        foreach (string claim in claims)
+            if (!File.Exists(claim) || !(await ReadAtomicEvidenceAsync(claim, token).ConfigureAwait(false)).AsSpan().SequenceEqual(payload))
+                throw new InvalidDataException("OriginalAtomicDirectoryOperationClaimChanged");
+    }
+
     private static byte[] AtomicPayload<T>(T value)
     {
         byte[] payload = AdapterProtocolJson.Encode(value);
@@ -349,12 +410,13 @@ internal static partial class LocalFileOperations
         byte[] bytes = new byte[checked((int)stream.Length)]; await stream.ReadExactlyAsync(bytes, token).ConfigureAwait(false); return bytes;
     }
 
-    private static LocalAtomicDirectoryReceipt ReadAtomicReceipt(LocalAtomicDirectoryAdmission admission, byte[] payload)
+    private static LocalAtomicDirectoryReceipt ReadAtomicReceipt(LocalAtomicDirectoryAdmission admission, byte[] payload,
+        LocalAtomicDirectoryAuthorization? authorization)
     {
         var receipt = AdapterProtocolJson.Decode<LocalAtomicDirectoryReceipt>(payload);
         if (receipt.Version != admission.Version || receipt.InstanceId != admission.InstanceId || receipt.AdmissionId != admission.AdmissionId ||
             receipt.TransactionId == Guid.Empty || receipt.AdmissionFingerprint != admission.Fingerprint || receipt.Effects is null ||
-            receipt.Effects.Count != admission.Entries.Count || receipt.PreparedAt == default ||
+            receipt.Effects.Count != admission.Entries.Count || receipt.PreparedAt == default || receipt.Authorization != authorization ||
             (admission.History is null ? receipt.HistoryVerifiedThrough is not null
                 : receipt.HistoryVerifiedThrough is not { } through || through < admission.History.Start.NextUsn))
             throw new InvalidDataException("CommittedOriginalAtomicDirectoryReceiptRequired");
