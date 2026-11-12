@@ -1,23 +1,23 @@
 {
   "schemaVersion": 1,
-  "version": "0.2.1",
-  "tag": "sdk-v0.2.1",
-  "sourceSha": "ce74cd358de148f148ce89ffc8478f6fe1920281",
+  "version": "0.3.0",
+  "tag": "sdk-v0.3.0",
+  "sourceSha": "ebb31a608360b3ac946c716cde3a6c1499ed299c",
   "assets": [
     {
-      "name": "MirrorPulse.Adapter.Conformance-0.2.1-win-arm64.zip",
-      "length": 35359322,
-      "sha256": "066b2283469e533aa317b23a62dbe72e4c6fba179b90b907adab2a6c85427ba2"
+      "name": "MirrorPulse.Adapter.Conformance-0.3.0-win-arm64.zip",
+      "length": 35376303,
+      "sha256": "2b221ecbcc5ca7ab5f107e4af007fa6604c3c020ad519fcfc534158262308159"
     },
     {
-      "name": "MirrorPulse.Adapter.Conformance-0.2.1-win-x64.zip",
-      "length": 37017563,
-      "sha256": "b6d2ae3972bd54e16b0215e3f7add33ed5dc32cc3154c59d220e28349377cbdf"
+      "name": "MirrorPulse.Adapter.Conformance-0.3.0-win-x64.zip",
+      "length": 37034554,
+      "sha256": "4e2c2f3f6df9d103839f11f857df362fd4b52d84891aaa016d516cbc1a67f4a6"
     },
     {
-      "name": "MirrorPulse.Worker.Spec-0.2.1.zip",
-      "length": 10443,
-      "sha256": "96cff574e268777b1c58c6a85602d99455636b77b445b024ec4f73b9128a7bec"
+      "name": "MirrorPulse.Worker.Spec-0.3.0.zip",
+      "length": 13304,
+      "sha256": "c080494e4188d5efb6d96d0871e1754539091002fe80215561b2dbd14cf75d31"
     }
   ]
 }

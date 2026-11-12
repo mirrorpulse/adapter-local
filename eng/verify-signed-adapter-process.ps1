@@ -6,6 +6,7 @@ $assets = [IO.Path]::GetFullPath($AssetDirectory)
 $product = [IO.Path]::GetFullPath($ProductRepositoryPath)
 & (Join-Path $PSScriptRoot 'verify-adapter-release-assets.ps1') -AssetDirectory $assets -SourceSha $SourceSha
 $metadata = Get-Content -LiteralPath (Join-Path $assets 'provider-release.json') -Raw | ConvertFrom-Json
+$sdkPin = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'adapter-sdk.lock.json') -Raw | ConvertFrom-Json
 & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'restore-adapter-sdk.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Fixed SDK verification failed.' }
 & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'restore-sdk-conformance.ps1')
@@ -43,9 +44,9 @@ try {
         $counts = $trx.TestRun.ResultSummary.Counters
         if ($counts.total -ne 1 -or $counts.executed -ne 1 -or $counts.passed -ne 1 -or $counts.notExecuted -ne 0) { throw 'The product profile must execute without skips.' }
         [ordered]@{ schemaVersion = 1; adapterSourceSha = $SourceSha; mirrorPulseSourceSha = $productSha;
-            runtime = $runtime; sdkVersion = '0.2.1'; sdkSourceSha = 'ce74cd358de148f148ce89ffc8478f6fe1920281';
+            runtime = $runtime; sdkVersion = $sdkPin.version; sdkSourceSha = $sdkPin.sourceSha;
             version = $metadata.version; packageSha256 = $packageRecord.sha256; packageLength = $packageRecord.length;
-            localConformanceCases = 12; productCases = 1; privateRuntimeVerified = $true;
+            localConformanceCases = 14; productCases = 1; privateRuntimeVerified = $true;
             officialTrustVerified = [bool]$metadata.publish; published = $false
         } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $results 'local-v2-evidence.json') -Encoding utf8
     } finally { Pop-Location }

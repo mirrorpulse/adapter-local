@@ -4,9 +4,9 @@
     "net10.0-windows7.0": {
       "MirrorPulse.Adapter.Sdk": {
         "type": "Direct",
-        "requested": "[0.2.1, 0.2.1]",
-        "resolved": "0.2.1",
-        "contentHash": "BMMtZiWynLMl+p2/zYjRJKFNaoXlHg/HqNaHqATlokcKcdYPn7hZaSm6/IOsXFrNOzBsz0D6w2ynjlNXdA5Tjw=="
+        "requested": "[0.3.0, 0.3.0]",
+        "resolved": "0.3.0",
+        "contentHash": "OhugOeH/gX//UQrDTLkYhKEdrpRpLFteY3qflsbT1LHfptgUqftTrNCTi6lgoEXU0wgwm8f/MtG2E0tp06qYDQ=="
       }
     }
   }

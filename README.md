@@ -2,7 +2,7 @@
 
 This is the official repository for the MirrorPulse Local Directory Adapter.
 
-The Worker consumes the fixed, hash-verified `MirrorPulse.Adapter.Sdk` 0.2.1
+The Worker consumes the fixed, hash-verified `MirrorPulse.Adapter.Sdk` 0.3.0
 release package. The Host supplies a `sourceDirectory` for each authorized root;
 disabled roots stay offline without probing their source paths. File IDs,
 pagination cursors, range reads, and uploads are scoped by the root key. A single
@@ -83,7 +83,7 @@ publication candidates must pass the product's official publisher trust anchor;
 dry runs use an explicitly disposable test key and do not publish a tag or release.
 The package is not rebuilt after signing or approval.
 
-`eng/adapter-sdk.lock.json` pins the original SDK 0.2.1 NuGet package from its
+`eng/adapter-sdk.lock.json` pins the original SDK 0.3.0 NuGet package from its
 GitHub release. `eng/sdk-conformance.lock.json` pins the specification and native
 conformance assets from the same source and verifies their lengths and hashes.
 That SDK runner implements a memory-source profile; the Local profile is built
