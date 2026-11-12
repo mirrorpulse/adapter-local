@@ -11,6 +11,32 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
     [TestMethod]
     [DataRow(false)]
     [DataRow(true)]
+    public async Task NamespaceFenceRejectsTransientExternalChildBetweenAdmissionAndFence(bool restoreWriteTime)
+    {
+        using var fixture = new Fixture();
+        var admission = await fixture.PrepareAsync(fenceParentNamespace: true);
+        var originalWriteTime = Directory.GetLastWriteTimeUtc(fixture.Tree);
+
+        var contender = await RunProbeAsync("--create-extra", fixture, admission);
+        Assert.AreEqual(0, contender.ExitCode, contender.Output);
+        string path = Path.Combine(fixture.Tree, "unowned.bin");
+        Assert.IsTrue(File.Exists(path));
+        File.Delete(path);
+        if (restoreWriteTime)
+        {
+            Directory.SetLastWriteTimeUtc(fixture.Tree, originalWriteTime);
+            Assert.AreEqual(originalWriteTime, Directory.GetLastWriteTimeUtc(fixture.Tree));
+        }
+
+        var refusal = await Assert.ThrowsExactlyAsync<InvalidDataException>(() => fixture.RetireAsync(admission));
+        Assert.AreEqual("OriginalAtomicDirectoryGenerationOrRevisionChanged", refusal.Message);
+        await fixture.AssertOriginalsAsync();
+        Assert.IsFalse(File.Exists(fixture.Receipt(admission)));
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
     public async Task NamespaceFenceProtectsOriginalDirectoriesFromAPreexistingMetadataWriter(bool nested)
     {
         using var fixture = new Fixture();
