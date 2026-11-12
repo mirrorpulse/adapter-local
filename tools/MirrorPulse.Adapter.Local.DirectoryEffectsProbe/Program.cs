@@ -5,7 +5,8 @@ using MirrorPulse.Adapter.Local.Worker;
 using MirrorPulse.Adapter.Sdk;
 
 if (args.Length > 0 && args[0] == "--parent-fence") return await LocalAtomicParentFenceProbe.RunAsync(args[1..]);
-if (args.Length < 2 || args[0] is not ("--retire" or "--create-extra" or "--delete-original" or "--overwrite-original")) return 2;
+if (args.Length < 2 || args[0] is not ("--retire" or "--create-extra" or "--delete-original" or
+    "--overwrite-original" or "--create-transient-peer")) return 2;
 string root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(args[1]));
 string name = Path.GetFileName(root); const string prefix = "mp-local-atomic-";
 if (!string.Equals(Path.GetDirectoryName(root), Path.TrimEndingDirectorySeparator(Path.GetTempPath()), StringComparison.OrdinalIgnoreCase) ||
@@ -20,6 +21,14 @@ foreach (string directory in new[] { source, state })
 try
 {
     if (args[0] == "--create-extra") { await File.WriteAllTextAsync(Path.Combine(source, "tree", "unowned.bin"), "independent unowned content"); return 0; }
+    if (args[0] == "--create-transient-peer")
+    {
+        string peer = Path.Combine(source, "unowned-transient-peer.bin");
+        await using (var created = new FileStream(peer, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            await created.WriteAsync(new byte[] { 1, 2, 3 });
+        File.Delete(peer);
+        return 0;
+    }
     if (args[0] == "--delete-original") { File.Delete(Path.Combine(source, "tree", "nested", "leaf.bin")); return 0; }
     if (args[0] == "--overwrite-original") { await File.WriteAllTextAsync(Path.Combine(source, "tree", "top.bin"), "independent changed content"); return 0; }
     if (args.Length is < 3 or > 4 || !Guid.TryParseExact(args[2], "N", out Guid admissionId)) return 2;
