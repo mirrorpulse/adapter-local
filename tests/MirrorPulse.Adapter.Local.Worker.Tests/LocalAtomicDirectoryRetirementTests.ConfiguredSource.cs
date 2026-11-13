@@ -1,8 +1,8 @@
 extern alias Probe;
 using MirrorPulse.Adapter.Sdk;
-using LocalAtomicDirectoryCheckpoint = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryCheckpoint;
-using LocalAtomicDirectoryReceipt = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryReceipt;
 using ProbeFileOperations = Probe::MirrorPulse.Adapter.Local.Worker.LocalFileOperations;
+using ProbeLocalAtomicDirectoryCheckpoint = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryCheckpoint;
+using ProbeLocalAtomicDirectoryReceipt = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryReceipt;
 
 namespace MirrorPulse.Adapter.Local.Worker.Tests;
 
@@ -19,13 +19,13 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
         var admission = await PrepareBoundAsync(fixture, request, configuredSource: true);
         var authorization = Authorize(admission) with { SdkRequestFingerprint = request.Fingerprint };
         authorization = authorization with { RequestFingerprint = authorization.CalculateFingerprint() };
-        LocalAtomicDirectoryCheckpoint? checkpoint = cut switch
+        ProbeLocalAtomicDirectoryCheckpoint? checkpoint = cut switch
         {
-            "before-commit" => LocalAtomicDirectoryCheckpoint.AfterReceiptStaged,
-            "after-commit" => LocalAtomicDirectoryCheckpoint.AfterCommit,
+            "before-commit" => ProbeLocalAtomicDirectoryCheckpoint.AfterReceiptStaged,
+            "after-commit" => ProbeLocalAtomicDirectoryCheckpoint.AfterCommit,
             _ => null
         };
-        Task<LocalAtomicDirectoryReceipt> RetireAsync(bool inject) =>
+        Task<ProbeLocalAtomicDirectoryReceipt> RetireAsync(bool inject) =>
             ProbeFileOperations.RetireAtomicDirectoryAsync(fixture.Paths, admission, fixture.State, true,
                 (point, _) => inject && point == checkpoint
                     ? ValueTask.FromException(new IOException("Interrupted configured-source transaction."))

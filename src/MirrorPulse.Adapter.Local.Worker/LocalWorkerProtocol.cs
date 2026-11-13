@@ -13,7 +13,6 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
     private readonly Dictionary<Guid, PendingUpload> _uploads = [];
     private readonly Dictionary<Guid, AcceptedUpload> _accepted = [];
     private readonly Queue<Guid> _acceptedOrder = [];
-#if LOCAL_ATOMIC_DIRECTORY_CANDIDATE
     private LocalAtomicDirectoryBackend? _atomicDirectories;
     private IReadOnlyList<string> _atomicCapabilities = [];
 
@@ -22,7 +21,6 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
         _atomicDirectories = backend;
         _atomicCapabilities = capabilities;
     }
-#endif
 
     public async Task RunAsync(CancellationToken cancellationToken)
     {
@@ -43,13 +41,11 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
             }
             try
             {
-#if LOCAL_ATOMIC_DIRECTORY_CANDIDATE
                 if (command.MessageType is AdapterOriginalDirectoryWire.AdmissionRequestMessage or AdapterAtomicDirectoryDeletionWire.RequestMessage)
                 {
                     await AtomicDirectoryAsync(command, cancellationToken).ConfigureAwait(false);
                     continue;
                 }
-#endif
                 if (command.MessageType == "Cancel")
                 {
                     await CancelAsync(command, cancellationToken).ConfigureAwait(false);
@@ -82,7 +78,6 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
         }
     }
 
-#if LOCAL_ATOMIC_DIRECTORY_CANDIDATE
     private async Task AtomicDirectoryAsync(AdapterControlFrame command, CancellationToken token)
     {
         var backend = _atomicDirectories ?? throw new InvalidDataException("CapabilityUnavailable");
@@ -109,7 +104,6 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
         }
         await ReplyAsync(command, response.MessageType, response.Payload, token).ConfigureAwait(false);
     }
-#endif
 
     private async Task ListAsync(AdapterControlFrame command, AdapterFileAddress address, LocalWorkerPaths paths, CancellationToken token)
     {
@@ -174,9 +168,7 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
     {
         AdapterOperationRequest operation = DecodeOperation(command);
         AdapterProtocolJson.ValidateMutation(operation, requiresDestination: false);
-#if LOCAL_ATOMIC_DIRECTORY_CANDIDATE
         _atomicDirectories?.RequireOrdinaryOperation(operation.OperationId);
-#endif
         long length = command.Payload.GetProperty("length").GetInt64();
         Guid stream = command.Payload.GetProperty("streamId").GetGuid();
         if (length < 0 || stream == Guid.Empty || _uploads.Count >= 4) throw new InvalidDataException("UploadLimit");
@@ -277,9 +269,7 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
         }
         else operation = DecodeOperation(command);
         AdapterProtocolJson.ValidateMutation(operation, requiresDestination: command.MessageType == "Move");
-#if LOCAL_ATOMIC_DIRECTORY_CANDIDATE
         _atomicDirectories?.RequireOrdinaryOperation(operation.OperationId);
-#endif
         if (address.Path.Length == 0 || operation.DestinationPath?.Length == 0) throw new InvalidDataException("RootMutationForbidden");
         LocalWorkerPaths? destination = command.MessageType == "Move" ? roots.GetPaths(operation.DestinationRootKey!) : null;
         string fingerprint = Fingerprint(command.MessageType, operation, null);

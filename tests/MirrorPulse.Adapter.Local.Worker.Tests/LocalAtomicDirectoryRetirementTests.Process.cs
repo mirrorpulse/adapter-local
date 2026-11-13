@@ -1,12 +1,12 @@
 extern alias Probe;
 using System.Diagnostics;
 using System.Text.Json;
-using LocalAtomicDirectoryAdmission = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryAdmission;
-using LocalAtomicDirectoryCheckpoint = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryCheckpoint;
-using LocalAtomicDirectoryEffect = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryEffect;
-using LocalAtomicDirectoryEntry = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryEntry;
-using LocalAtomicDirectoryReceipt = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryReceipt;
 using ProbeFileOperations = Probe::MirrorPulse.Adapter.Local.Worker.LocalFileOperations;
+using ProbeLocalAtomicDirectoryAdmission = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryAdmission;
+using ProbeLocalAtomicDirectoryCheckpoint = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryCheckpoint;
+using ProbeLocalAtomicDirectoryEffect = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryEffect;
+using ProbeLocalAtomicDirectoryEntry = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryEntry;
+using ProbeLocalAtomicDirectoryReceipt = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryReceipt;
 using ProbeMarker = Probe::MirrorPulse.Adapter.Local.DirectoryEffectsProbe.ProbeMarker;
 using ProbeWorkerPaths = Probe::MirrorPulse.Adapter.Local.Worker.LocalWorkerPaths;
 
@@ -15,10 +15,10 @@ namespace MirrorPulse.Adapter.Local.Worker.Tests;
 public sealed partial class LocalAtomicDirectoryRetirementTests
 {
     [TestMethod]
-    [DataRow(nameof(LocalAtomicDirectoryCheckpoint.AfterOriginalsLocked))]
-    [DataRow(nameof(LocalAtomicDirectoryCheckpoint.AfterFirstChildStaged))]
-    [DataRow(nameof(LocalAtomicDirectoryCheckpoint.AfterParentStaged))]
-    [DataRow(nameof(LocalAtomicDirectoryCheckpoint.AfterReceiptStaged))]
+    [DataRow(nameof(ProbeLocalAtomicDirectoryCheckpoint.AfterOriginalsLocked))]
+    [DataRow(nameof(ProbeLocalAtomicDirectoryCheckpoint.AfterFirstChildStaged))]
+    [DataRow(nameof(ProbeLocalAtomicDirectoryCheckpoint.AfterParentStaged))]
+    [DataRow(nameof(ProbeLocalAtomicDirectoryCheckpoint.AfterReceiptStaged))]
     public async Task ActualProcessExitBeforeCommitRollsBackAndANewProcessCompletesTheOriginalBatch(string cut)
     {
         using var fixture = new Fixture(); var admission = await fixture.PrepareAsync();
@@ -35,7 +35,7 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
     public async Task ActualProcessExitAfterCommitReplaysTheSameReceiptAndPreservesALaterGeneration()
     {
         using var fixture = new Fixture(); var admission = await fixture.PrepareAsync();
-        var stopped = await RunProbeAsync("--retire", fixture, admission, nameof(LocalAtomicDirectoryCheckpoint.AfterCommit));
+        var stopped = await RunProbeAsync("--retire", fixture, admission, nameof(ProbeLocalAtomicDirectoryCheckpoint.AfterCommit));
         Assert.AreEqual(73, stopped.ExitCode); Assert.IsFalse(Directory.Exists(fixture.Tree));
         string original = await File.ReadAllTextAsync(fixture.Receipt(admission));
         Directory.CreateDirectory(fixture.Tree); await File.WriteAllTextAsync(Path.Combine(fixture.Tree, "new.bin"), "new independent generation");
@@ -55,7 +55,7 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
         using var fixture = new Fixture(); var admission = await fixture.PrepareAsync(); bool refused = false;
         var receipt = await fixture.RetireAsync(admission, async (point, _) =>
         {
-            if (point != LocalAtomicDirectoryCheckpoint.AfterOriginalsLocked) return;
+            if (point != ProbeLocalAtomicDirectoryCheckpoint.AfterOriginalsLocked) return;
             var contender = await RunProbeAsync(action, fixture, admission);
             Assert.AreEqual(91, contender.ExitCode); refused = true;
         });
@@ -69,7 +69,7 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
         using var fixture = new Fixture(); var admission = await fixture.PrepareAsync(); bool created = false;
         await Assert.ThrowsAsync<System.ComponentModel.Win32Exception>(() => fixture.RetireAsync(admission, async (point, _) =>
         {
-            if (point != LocalAtomicDirectoryCheckpoint.AfterFirstChildStaged) return;
+            if (point != ProbeLocalAtomicDirectoryCheckpoint.AfterFirstChildStaged) return;
             var contender = await RunProbeAsync("--create-extra", fixture, admission);
             Assert.AreEqual(0, contender.ExitCode, contender.Output); created = true;
         }));
@@ -84,12 +84,12 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
         using var fixture = new Fixture(); var admission = await fixture.PrepareAsync();
         var receipt = await fixture.RetireAsync(admission, async (point, _) =>
         {
-            if (point != LocalAtomicDirectoryCheckpoint.AfterOriginalsLocked) return;
+            if (point != ProbeLocalAtomicDirectoryCheckpoint.AfterOriginalsLocked) return;
             string path = Path.Combine(fixture.Tree, "unowned-transient.bin");
             await File.WriteAllTextAsync(path, "unowned transient mutation", CancellationToken.None); File.Delete(path);
         });
         Assert.HasCount(4, receipt.Effects);
-        Assert.IsNull(typeof(global::MirrorPulse.Adapter.Local.Worker.LocalWorkerPaths).Assembly.GetType("MirrorPulse.Adapter.Local.Worker.AtomicDirectoryNative"));
+        Assert.IsNull(admission.History, "Only the intentionally unqualified probe may bypass original volume history.");
         Assert.IsFalse(Directory.Exists(fixture.Tree));
     }
 
@@ -99,7 +99,7 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
         using var fixture = new Fixture(); var admission = await fixture.PrepareAsync(); bool refused = false;
         var receipt = await fixture.RetireAsync(admission, async (point, _) =>
         {
-            if (point != LocalAtomicDirectoryCheckpoint.AfterParentStaged) return;
+            if (point != ProbeLocalAtomicDirectoryCheckpoint.AfterParentStaged) return;
             var contender = await RunProbeAsync("--create-extra", fixture, admission);
             Assert.AreEqual(91, contender.ExitCode); refused = true;
         });
@@ -107,7 +107,7 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
     }
 
     private static async Task<(int ExitCode, string Output)> RunProbeAsync(string action, Fixture fixture,
-        LocalAtomicDirectoryAdmission admission, string? cut = null)
+        ProbeLocalAtomicDirectoryAdmission admission, string? cut = null)
     {
         var start = new ProcessStartInfo("dotnet")
         {

@@ -18,7 +18,7 @@ foreach ($project in $projects) {
 if ($LASTEXITCODE -ne 0) { throw 'Local process conformance failed.' }
 [xml]$trx = Get-Content -LiteralPath (@(Get-ChildItem -LiteralPath artifacts/test-results -Filter '*.trx' | Sort-Object LastWriteTimeUtc -Descending)[0].FullName) -Raw
 $counts = $trx.TestRun.ResultSummary.Counters
-$expectedCases = 121
+$expectedCases = 127
 if ($counts.total -ne $expectedCases -or $counts.executed -ne $expectedCases -or $counts.passed -ne $expectedCases -or $counts.notExecuted -ne 0) {
     throw "All $expectedCases Local adapter cases must execute without skips."
 }

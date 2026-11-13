@@ -1,9 +1,9 @@
 extern alias Probe;
 using System.Security.Cryptography;
 using MirrorPulse.Adapter.Sdk;
-using LocalAtomicDirectoryAdmission = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryAdmission;
-using LocalAtomicDirectoryCheckpoint = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryCheckpoint;
 using ProbeFileOperations = Probe::MirrorPulse.Adapter.Local.Worker.LocalFileOperations;
+using ProbeLocalAtomicDirectoryAdmission = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryAdmission;
+using ProbeLocalAtomicDirectoryCheckpoint = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryCheckpoint;
 
 namespace MirrorPulse.Adapter.Local.Worker.Tests;
 
@@ -118,9 +118,9 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
         var admission = await PrepareBoundAsync(fixture, request);
         var authorization = Authorize(admission);
         await Assert.ThrowsExactlyAsync<IOException>(() => fixture.RetireAsync(admission, (point, _) =>
-            point == LocalAtomicDirectoryCheckpoint.AfterAuthorizationCommitted ? ValueTask.FromException(new IOException("Reserve before process restart.")) : ValueTask.CompletedTask,
+            point == ProbeLocalAtomicDirectoryCheckpoint.AfterAuthorizationCommitted ? ValueTask.FromException(new IOException("Reserve before process restart.")) : ValueTask.CompletedTask,
             authorization));
-        var stopped = await RunProbeAsync("--retire-authorized", fixture, admission, nameof(LocalAtomicDirectoryCheckpoint.AfterCommit));
+        var stopped = await RunProbeAsync("--retire-authorized", fixture, admission, nameof(ProbeLocalAtomicDirectoryCheckpoint.AfterCommit));
         Assert.AreEqual(73, stopped.ExitCode, stopped.Output);
         byte[] receipt = await File.ReadAllBytesAsync(fixture.Receipt(admission));
         Directory.CreateDirectory(fixture.Tree);
@@ -182,7 +182,7 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
             Operations = operations.Select(operation => new { OperationKind = "Delete", Operation = operation }).ToArray()
         })));
 
-    private static Task<LocalAtomicDirectoryAdmission> PrepareBoundAsync(Fixture fixture, BoundRequest request, bool configuredSource = false) =>
+    private static Task<ProbeLocalAtomicDirectoryAdmission> PrepareBoundAsync(Fixture fixture, BoundRequest request, bool configuredSource = false) =>
         ProbeFileOperations.PrepareAtomicDirectoryRetirementAsync(fixture.Paths, request.Instance, request.Admission, "docs", request.Relative,
             request.Operations.ToDictionary(operation => operation.Path, operation => operation.OperationId, StringComparer.Ordinal), fixture.State,
             true, CancellationToken.None, verifyVolumeHistory: true, originalRequests: request.Operations, originalRequestFingerprint: request.Fingerprint,
