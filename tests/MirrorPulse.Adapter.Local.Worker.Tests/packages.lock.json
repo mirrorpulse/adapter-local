@@ -155,20 +155,20 @@
       "mirrorpulse.adapter.local.directoryeffectsprobe": {
         "type": "Project",
         "dependencies": {
-          "MirrorPulse.Adapter.Sdk": "[0.2.1, 0.2.1]"
+          "MirrorPulse.Adapter.Sdk": "[0.3.0, 0.3.0]"
         }
       },
       "mirrorpulse.adapter.local.worker": {
         "type": "Project",
         "dependencies": {
-          "MirrorPulse.Adapter.Sdk": "[0.2.1, 0.2.1]"
+          "MirrorPulse.Adapter.Sdk": "[0.3.0, 0.3.0]"
         }
       },
       "MirrorPulse.Adapter.Sdk": {
         "type": "CentralTransitive",
-        "requested": "[0.2.1, 0.2.1]",
-        "resolved": "0.2.1",
-        "contentHash": "BMMtZiWynLMl+p2/zYjRJKFNaoXlHg/HqNaHqATlokcKcdYPn7hZaSm6/IOsXFrNOzBsz0D6w2ynjlNXdA5Tjw=="
+        "requested": "[0.3.0, 0.3.0]",
+        "resolved": "0.3.0",
+        "contentHash": "OhugOeH/gX//UQrDTLkYhKEdrpRpLFteY3qflsbT1LHfptgUqftTrNCTi6lgoEXU0wgwm8f/MtG2E0tp06qYDQ=="
       }
     }
   }

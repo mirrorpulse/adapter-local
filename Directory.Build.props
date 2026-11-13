@@ -10,4 +10,7 @@
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(LocalAtomicSdkProject)' != ''">
+    <NuGetLockFilePath>$(MSBuildProjectDirectory)/obj/atomic-candidate.packages.lock.json</NuGetLockFilePath>
+  </PropertyGroup>
 </Project>

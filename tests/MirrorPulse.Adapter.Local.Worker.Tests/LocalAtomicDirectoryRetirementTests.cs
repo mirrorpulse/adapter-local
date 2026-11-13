@@ -2,6 +2,7 @@ extern alias Probe;
 using System.ComponentModel;
 using System.Text.Json;
 using LocalAtomicDirectoryAdmission = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryAdmission;
+using LocalAtomicDirectoryAuthorization = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryAuthorization;
 using LocalAtomicDirectoryCheckpoint = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryCheckpoint;
 using LocalAtomicDirectoryEffect = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryEffect;
 using LocalAtomicDirectoryEntry = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryEntry;
@@ -83,23 +84,26 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
         internal string Tree { get; }
         internal string Peer { get; }
         internal string DirectoryPath => _directory;
-        internal Fixture()
+        internal Fixture(bool configuredSource = false)
         {
-            string source = Path.Combine(_directory, "source"); State = Path.Combine(_directory, "state"); Tree = Path.Combine(source, "tree");
+            string source = Path.Combine(_directory, configuredSource ? "configured-storage" : "source");
+            State = Path.Combine(_directory, "state"); Tree = Path.Combine(source, "tree");
             Directory.CreateDirectory(Path.Combine(Tree, "nested")); Directory.CreateDirectory(State);
-            File.WriteAllText(Path.Combine(_directory, ".mp-atomic-test-fixture"), Path.GetFileName(_directory));
+            if (!configuredSource) File.WriteAllText(Path.Combine(_directory, ".mp-atomic-test-fixture"), Path.GetFileName(_directory));
             File.WriteAllText(Path.Combine(Tree, "nested", "leaf.bin"), "original leaf bytes");
             File.WriteAllText(Path.Combine(Tree, "top.bin"), "original top bytes");
             Peer = Path.Combine(source, "peer.bin"); File.WriteAllText(Peer, "unrelated peer"); Paths = new(source);
         }
-        internal Task<LocalAtomicDirectoryAdmission> PrepareAsync(bool fenceParentNamespace = false)
+        internal Task<LocalAtomicDirectoryAdmission> PrepareAsync(bool fenceParentNamespace = false, bool verifyVolumeHistory = false)
         {
             var operations = OriginalPaths.ToDictionary(path => path, _ => Guid.NewGuid(), StringComparer.Ordinal);
-            return ProbeFileOperations.PrepareAtomicDirectoryRetirementAsync(Paths, Guid.NewGuid(), Guid.NewGuid(), "docs", "tree", operations, State, true, CancellationToken.None, fenceParentNamespace);
+            return ProbeFileOperations.PrepareAtomicDirectoryRetirementAsync(Paths, Guid.NewGuid(), Guid.NewGuid(), "docs", "tree",
+                operations, State, true, CancellationToken.None, fenceParentNamespace, verifyVolumeHistory);
         }
         internal Task<LocalAtomicDirectoryReceipt> RetireAsync(LocalAtomicDirectoryAdmission admission,
-            Func<LocalAtomicDirectoryCheckpoint, CancellationToken, ValueTask>? checkpoint = null) =>
-            ProbeFileOperations.RetireAtomicDirectoryAsync(Paths, admission, State, true, checkpoint, CancellationToken.None);
+            Func<LocalAtomicDirectoryCheckpoint, CancellationToken, ValueTask>? checkpoint = null,
+            LocalAtomicDirectoryAuthorization? authorization = null) =>
+            ProbeFileOperations.RetireAtomicDirectoryAsync(Paths, admission, State, true, checkpoint, CancellationToken.None, authorization);
         internal string Receipt(LocalAtomicDirectoryAdmission admission) => Path.Combine(State, admission.AdmissionId.ToString("N") + ".committed.json");
         internal async Task AssertOriginalsAsync()
         {

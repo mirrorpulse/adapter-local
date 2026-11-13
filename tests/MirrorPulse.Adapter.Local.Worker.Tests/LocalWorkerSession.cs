@@ -10,14 +10,17 @@ internal sealed class LocalWorkerSession : IAsyncDisposable
 {
     private readonly NamedPipeServerStream _pipe;
     private readonly Process _process;
-    private readonly Guid _instance = Guid.NewGuid();
+    private readonly Guid _instance;
     private readonly Guid _session = Guid.NewGuid();
     private readonly CancellationTokenSource _deadline = new(TimeSpan.FromSeconds(30));
     private int _protocol = 1;
+    private readonly bool _ownsFixture;
 
-    private LocalWorkerSession(string root)
+    private LocalWorkerSession(string root, Guid? instance = null, string? state = null)
     {
         Root = root;
+        _instance = instance ?? Guid.NewGuid();
+        _ownsFixture = instance is null;
         Directory.CreateDirectory(root);
         string pipeName = "mp-local-test-" + Guid.NewGuid().ToString("N");
         _pipe = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
@@ -31,6 +34,8 @@ internal sealed class LocalWorkerSession : IAsyncDisposable
             start.ArgumentList.Add(argument);
         Cache = Path.Combine(root, "transfers");
         start.Environment["MP_TRANSFER_CACHE_DIR"] = Cache;
+        start.Environment.Remove("MP_WORKER_STATE_DIR");
+        if (state is not null) start.Environment["MP_WORKER_STATE_DIR"] = state;
         if (configuredWorker is not null)
         {
             string unavailable = Path.Combine(root, "unavailable-runtime");
@@ -44,6 +49,44 @@ internal sealed class LocalWorkerSession : IAsyncDisposable
 
     public string Root { get; }
     public string Cache { get; }
+
+#if LOCAL_ATOMIC_DIRECTORY_CANDIDATE
+    internal IReadOnlyList<string> AtomicCapabilities { get; private set; } = [];
+
+    internal static async Task<LocalWorkerSession> StartAtomicAsync(string fixture, Guid instance, bool selectCapabilities = true,
+        bool enabled = true, bool provideGrant = true)
+    {
+        var session = new LocalWorkerSession(fixture, instance, provideGrant ? Path.Combine(fixture, "state") : null);
+        try
+        {
+            await session._pipe.WaitForConnectionAsync(session._deadline.Token);
+            var hello = await session.ReadAsync();
+            Assert.AreEqual("Hello", hello.MessageType);
+            var offered = AdapterHandshake.ReadHello(hello.Payload).Capabilities;
+            Assert.AreEqual(provideGrant, offered.Contains(AdapterOriginalDirectoryWire.Capability));
+            Assert.AreEqual(provideGrant, offered.Contains(AdapterAtomicDirectoryDeletionWire.Capability));
+            Assert.IsFalse(offered.Contains(AdapterOriginalDirectoryWire.ChildCapability));
+            session.AtomicCapabilities = selectCapabilities && provideGrant
+                ? [.. AdapterHandshake.V2Capabilities, AdapterOriginalDirectoryWire.Capability, AdapterAtomicDirectoryDeletionWire.Capability]
+                : AdapterHandshake.V2Capabilities;
+            AdapterRootBinding[] roots = [new("docs", enabled,
+                new Dictionary<string, string> { ["sourceDirectory"] = Path.Combine(fixture, "source") })];
+            await session.SendAsync("Ready", hello.RequestId,
+                new AdapterReady(2, session.AtomicCapabilities, roots, new Dictionary<string, string>()), response: true);
+            session._protocol = 2;
+            Assert.AreEqual("Connected", (await session.ReadAsync()).MessageType);
+            return session;
+        }
+        catch { await session.DisposeAsync(); throw; }
+    }
+
+    internal async Task<(AdapterControlFrame Request, AdapterControlFrame Response)> ExchangeAtomicAsync(string message, object payload)
+    {
+        var request = new AdapterControlFrame(2, message, Guid.NewGuid(), _instance, _session, false, AdapterProtocolJson.ToElement(payload));
+        await WriteFrameAsync(AdapterProtocolJson.Encode(request));
+        return (request, await ReadAsync());
+    }
+#endif
 
     public static async Task<LocalWorkerSession> StartAsync()
     {
@@ -182,6 +225,6 @@ internal sealed class LocalWorkerSession : IAsyncDisposable
         _process.Dispose();
         await _pipe.DisposeAsync();
         _deadline.Dispose();
-        Directory.Delete(Root, recursive: true);
+        if (_ownsFixture) Directory.Delete(Root, recursive: true);
     }
 }
