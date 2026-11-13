@@ -77,8 +77,13 @@ internal static class AtomicDirectoryNative
     }
     internal static void FenceNamespace(string source, string temporary, SafeFileHandle transaction)
     {
-        if (!MoveFileTransactedW(source, temporary, IntPtr.Zero, IntPtr.Zero, 0, transaction) ||
-            !MoveFileTransactedW(temporary, source, IntPtr.Zero, IntPtr.Zero, 0, transaction))
+        Move(source, temporary, transaction);
+        Move(temporary, source, transaction);
+    }
+    /// <summary>Stages a same-volume rename without replacing the destination; supplies no admission proof.</summary>
+    internal static void Move(string source, string destination, SafeFileHandle transaction)
+    {
+        if (!MoveFileTransactedW(source, destination, IntPtr.Zero, IntPtr.Zero, 0, transaction))
             throw new Win32Exception(Marshal.GetLastPInvokeError());
     }
     internal static void WriteReceipt(string path, byte[] payload, SafeFileHandle transaction)
