@@ -89,8 +89,27 @@ recovery preserving a successor, manifest rebinding, missing receipt binding,
 cross-admission operation reuse and missing operation claims. The gate requires
 all 104 cases, retaining the original 92 without skips.
 
-The experiment still runs in disposable fixtures. Shipping integration needs
-public wire admission, a separately negotiated whole-batch deletion request,
-Host durable batch acceptance and official journal ACK, plus signed end-to-end
-qualification. A backend that supports individual child-effect requests must
-instead provide a genuinely durable receipt for each effect.
+## Original request binding
+
+Version 4 retains the exact ordered conditional Delete request and its SDK
+request fingerprint before any source effect. It compares every requested
+object kind and revision with the complete native inventory. It records the
+full native generation of every member and the original direct parent,
+including the parent's own parent generation when applicable. The admission
+persists in one transaction. A matching retry recovers the retained witnesses
+after validating the original root and state directory identities.
+
+The retained admission supplies the existing SDK directory witness types in
+request order. Each witness binds the exact request and native admission. A
+separate Host manifest authorization remains required for execution. Version 4
+stages and records the source effects in the authorized leaf-first order and
+recovers the same evidence after process death or a lost reply.
+
+Thirteen added cases cover top-level and nested requests, original condition and
+inventory changes, order and request fingerprint validation, immutable replay,
+successor preservation, authorization, and replacement of the source root or
+state directory. The gate requires 117 passes and retains the original 104 cases.
+
+The experiment runs in disposable fixtures. Shipping integration still needs
+the released SDK admission and whole-batch transport, a production Local
+backend, Host batch acceptance, official journal ACK and signed qualification.
