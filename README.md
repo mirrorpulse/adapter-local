@@ -38,8 +38,9 @@ compare-and-swap primitive or a security sandbox against another privileged
 process. Unsupported cross-volume moves and native operations are rejected.
 Session replay receipts are bounded and kept in memory; after Worker restart,
 the Host must reconcile an unacknowledged mutation rather than infer success.
-When both peers select `local-durable-directory-move`, directory `Move` instead
-uses a same-volume NTFS transaction to rename the container and commit its
+When both peers select `local-durable-directory-move`, the Host can set
+`durableDirectoryMove: true` on a directory `Move`. The Worker uses a same-volume
+NTFS transaction to rename the container and commit its
 receipt together. The Host supplies the original directory revision and requires
 an absent target. An identical request can recover the receipt after a Worker
 restart without inspecting the old source or target occupants. The receipt

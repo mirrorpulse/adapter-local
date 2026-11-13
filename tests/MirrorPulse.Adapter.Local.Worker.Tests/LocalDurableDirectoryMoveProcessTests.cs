@@ -9,12 +9,25 @@ public sealed class LocalDurableDirectoryMoveProcessTests
     public async Task AnExistingHostThatDoesNotSelectDurableMoveKeepsStandardDirectoryMove()
     {
         using var fixture = new Fixture();
-        await using var worker = await LocalWorkerSession.StartWithStateAsync(fixture.Root, fixture.Instance, selectDurableMove: false);
+        await using var worker = await LocalWorkerSession.StartWithStateAsync(fixture.Root, fixture.Instance);
         var operation = await Fixture.RequestAsync(worker);
         var response = await worker.RequestAsync("Move", operation);
         Assert.AreEqual("MutationComplete", response.MessageType);
         Assert.IsFalse(File.Exists(fixture.Receipt(operation)));
         await fixture.AssertMovedAsync();
+    }
+
+    [TestMethod]
+    public async Task TheDurableRequestCannotFallBackOnASessionThatDidNotSelectIt()
+    {
+        using var fixture = new Fixture();
+        await using var worker = await LocalWorkerSession.StartWithStateAsync(fixture.Root, fixture.Instance, selectDurableMove: false);
+        var operation = await Fixture.RequestAsync(worker);
+        var response = await worker.RequestAsync("Move", Durable(operation));
+        Assert.AreEqual("OperationError", response.MessageType);
+        Assert.AreEqual("CapabilityUnavailable", response.Payload.GetProperty("code").GetString());
+        Assert.IsFalse(Directory.Exists(Path.Combine(fixture.Source, "moved")));
+        Assert.IsFalse(File.Exists(fixture.Receipt(operation)));
     }
 
     [TestMethod]
@@ -25,7 +38,7 @@ public sealed class LocalDurableDirectoryMoveProcessTests
         await using (var first = await LocalWorkerSession.StartWithStateAsync(fixture.Root, fixture.Instance))
         {
             operation = await Fixture.RequestAsync(first);
-            await first.SendAsync("Move", Guid.NewGuid(), operation);
+            await first.SendAsync("Move", Guid.NewGuid(), Durable(operation));
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
             while (!File.Exists(fixture.Receipt(operation))) await Task.Delay(20, deadline.Token);
             // Deliberately do not read the accepted response before releasing the actual Worker and pipe.
@@ -37,7 +50,7 @@ public sealed class LocalDurableDirectoryMoveProcessTests
         string cache = Path.Combine(fixture.Root, "transfers");
         if (Directory.Exists(cache)) Directory.Delete(cache, recursive: true);
         await using var second = await LocalWorkerSession.StartWithStateAsync(fixture.Root, fixture.Instance);
-        var response = await second.RequestAsync("Move", operation);
+        var response = await second.RequestAsync("Move", Durable(operation));
         Assert.AreEqual("MutationComplete", response.MessageType);
         Assert.AreEqual(operation.Preconditions!.ExpectedRevision, response.Payload.GetProperty("revision").GetString());
         CollectionAssert.AreEqual(receipt, await File.ReadAllBytesAsync(fixture.Receipt(operation)));
@@ -53,10 +66,10 @@ public sealed class LocalDurableDirectoryMoveProcessTests
         await using (var first = await LocalWorkerSession.StartWithStateAsync(fixture.Root, fixture.Instance))
         {
             operation = await Fixture.RequestAsync(first);
-            Assert.AreEqual("MutationComplete", (await first.RequestAsync("Move", operation)).MessageType);
+            Assert.AreEqual("MutationComplete", (await first.RequestAsync("Move", Durable(operation))).MessageType);
         }
         await using var second = await LocalWorkerSession.StartWithStateAsync(fixture.Root, fixture.Instance);
-        var response = await second.RequestAsync("Move", operation with { DestinationPath = "different" });
+        var response = await second.RequestAsync("Move", Durable(operation with { DestinationPath = "different" }));
         Assert.AreEqual("OperationError", response.MessageType);
         Assert.AreEqual("OperationBindingMismatch", response.Payload.GetProperty("code").GetString());
         await fixture.AssertMovedAsync();
@@ -73,7 +86,7 @@ public sealed class LocalDurableDirectoryMoveProcessTests
         await using (var first = await LocalWorkerSession.StartWithStateAsync(fixture.Root, fixture.Instance))
         {
             operation = await Fixture.RequestAsync(first);
-            Assert.AreEqual("MutationComplete", (await first.RequestAsync("Move", operation)).MessageType);
+            Assert.AreEqual("MutationComplete", (await first.RequestAsync("Move", Durable(operation))).MessageType);
         }
         await using var second = await LocalWorkerSession.StartWithStateAsync(fixture.Root, fixture.Instance);
         object request = type == "CreateDirectory"
@@ -92,12 +105,24 @@ public sealed class LocalDurableDirectoryMoveProcessTests
         using var fixture = new Fixture();
         await using var worker = await LocalWorkerSession.StartWithStateAsync(fixture.Root, fixture.Instance, Path.Combine(fixture.Source, "state"));
         var operation = await Fixture.RequestAsync(worker);
-        var response = await worker.RequestAsync("Move", operation);
+        var response = await worker.RequestAsync("Move", Durable(operation));
         Assert.AreEqual("OperationError", response.MessageType);
         Assert.AreEqual("DurableDirectoryMoveStateMustBePrivate", response.Payload.GetProperty("code").GetString());
         Assert.IsFalse(Directory.Exists(Path.Combine(fixture.Source, "moved")));
         Assert.AreEqual("original bytes", await File.ReadAllTextAsync(Path.Combine(fixture.Tree, "nested", "leaf.bin")));
     }
+
+    private static object Durable(AdapterOperationRequest operation) => new
+    {
+        operation.OperationId,
+        operation.RootKey,
+        operation.Path,
+        operation.DestinationRootKey,
+        operation.DestinationPath,
+        operation.Preconditions,
+        operation.IsDirectory,
+        durableDirectoryMove = true,
+    };
 
     private sealed class Fixture : IDisposable
     {

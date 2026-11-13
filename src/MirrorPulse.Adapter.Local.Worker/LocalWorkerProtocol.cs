@@ -284,7 +284,15 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
         }
         else operation = DecodeOperation(command);
         AdapterProtocolJson.ValidateMutation(operation, requiresDestination: command.MessageType == "Move");
-        bool durableMove = command.MessageType == "Move" && operation.IsDirectory && durableMoveSelected;
+        bool durableMove = false;
+        if (command.Payload.TryGetProperty("durableDirectoryMove", out JsonElement durableFlag))
+        {
+            if (durableFlag.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                throw new InvalidDataException("InvalidDurableDirectoryMove");
+            durableMove = durableFlag.GetBoolean();
+        }
+        if (durableMove && (command.MessageType != "Move" || !operation.IsDirectory || !durableMoveSelected))
+            throw new InvalidDataException("CapabilityUnavailable");
         if (!durableMove)
             LocalFileOperations.RequireNoDurableDirectoryMove(stateDirectory, operation.OperationId);
 #if LOCAL_ATOMIC_DIRECTORY_CANDIDATE
