@@ -6,7 +6,7 @@ using Microsoft.Win32.SafeHandles;
 
 namespace MirrorPulse.Adapter.Local.Worker;
 
-/// <summary>Optional experimental NTFS transaction primitives; never used by ordinary Local operations.</summary>
+/// <summary>NTFS transaction primitives for a container rename and isolated recursive effect qualification.</summary>
 internal static class AtomicDirectoryNative
 {
     internal sealed class Item : IDisposable

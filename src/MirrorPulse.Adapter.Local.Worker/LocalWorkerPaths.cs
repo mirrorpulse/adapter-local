@@ -27,6 +27,25 @@ public sealed class LocalWorkerPaths
 
     public string Resolve(string relativePath)
     {
+        string path = ResolveAddress(relativePath);
+        string current = _root;
+        foreach (string segment in path[_prefix.Length..].Split(Path.DirectorySeparatorChar))
+        {
+            current = Path.Combine(current, segment);
+            if ((File.Exists(current) || Directory.Exists(current)) &&
+                (File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+            {
+                throw new InvalidDataException("The local Worker cannot traverse a reparse point.");
+            }
+        }
+
+        return path;
+    }
+
+    // Validates the name without looking up its current occupant. Historical receipts
+    // must remain readable after later objects have replaced the original paths.
+    internal string ResolveAddress(string relativePath)
+    {
         ArgumentException.ThrowIfNullOrWhiteSpace(relativePath);
         if (relativePath.Length > 4096 || Path.IsPathRooted(relativePath) ||
             relativePath.Contains('\0') || relativePath.StartsWith('\\') ||
@@ -47,17 +66,6 @@ public sealed class LocalWorkerPaths
         if (!path.StartsWith(_prefix, StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidDataException("The local Worker path escaped the source directory.");
-        }
-
-        string current = _root;
-        foreach (string segment in segments)
-        {
-            current = Path.Combine(current, segment);
-            if ((File.Exists(current) || Directory.Exists(current)) &&
-                (File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
-            {
-                throw new InvalidDataException("The local Worker cannot traverse a reparse point.");
-            }
         }
 
         return path;

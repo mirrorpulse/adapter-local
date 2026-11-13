@@ -89,7 +89,11 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
             await File.WriteAllTextAsync(path, "unowned transient mutation", CancellationToken.None); File.Delete(path);
         });
         Assert.HasCount(4, receipt.Effects);
-        Assert.IsNull(typeof(global::MirrorPulse.Adapter.Local.Worker.LocalWorkerPaths).Assembly.GetType("MirrorPulse.Adapter.Local.Worker.AtomicDirectoryNative"));
+        // Ordinary container moves use the native transaction helper. The unqualified
+        // recursive deletion backend must still be absent from the shipping Worker.
+        var shippingWorker = typeof(global::MirrorPulse.Adapter.Local.Worker.LocalWorkerPaths).Assembly;
+        Assert.IsNull(shippingWorker.GetType("MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryBackend"));
+        Assert.IsNull(shippingWorker.GetType("MirrorPulse.Adapter.Local.Worker.AtomicDirectoryJournal"));
         Assert.IsFalse(Directory.Exists(fixture.Tree));
     }
 

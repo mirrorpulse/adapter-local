@@ -6,6 +6,8 @@ namespace MirrorPulse.Adapter.Local.Worker;
 
 public static class LocalWorkerProgram
 {
+    internal const string DurableDirectoryMoveCapability = "local-durable-directory-move";
+
     public static async Task<int> RunAsync(IReadOnlyList<string> args,
         CancellationToken cancellationToken = default)
     {
@@ -17,8 +19,10 @@ public static class LocalWorkerProgram
         await using var channel = new AdapterControlChannel(pipe, arguments.InstanceId, arguments.WorkerSessionId);
         Guid helloId = Guid.NewGuid();
         IReadOnlyList<string> capabilities = AdapterHandshake.V2Capabilities;
-#if LOCAL_ATOMIC_DIRECTORY_CANDIDATE
         string? stateDirectory = Environment.GetEnvironmentVariable("MP_WORKER_STATE_DIR");
+        if (!string.IsNullOrWhiteSpace(stateDirectory))
+            capabilities = [.. capabilities, DurableDirectoryMoveCapability];
+#if LOCAL_ATOMIC_DIRECTORY_CANDIDATE
         if (LocalAtomicDirectoryBackend.IsEnabled(stateDirectory))
             capabilities = [.. capabilities, AdapterOriginalDirectoryWire.Capability, AdapterAtomicDirectoryDeletionWire.Capability];
 #endif
@@ -36,10 +40,11 @@ public static class LocalWorkerProgram
             string cache = Environment.GetEnvironmentVariable("MP_TRANSFER_CACHE_DIR")
                 ?? throw new InvalidDataException("TransferCacheRequired");
             var roots = new LocalWorkerRoots(ready.Roots);
-            await using var protocol = new LocalWorkerProtocol(channel, arguments, roots, cache);
-#if LOCAL_ATOMIC_DIRECTORY_CANDIDATE
             if (ready.Capabilities.Except(offer.Capabilities, StringComparer.Ordinal).Any())
                 throw new InvalidDataException("UnadvertisedCapabilitySelected");
+            bool durableMoveSelected = ready.Capabilities.Contains(DurableDirectoryMoveCapability, StringComparer.Ordinal);
+            await using var protocol = new LocalWorkerProtocol(channel, arguments, roots, cache, stateDirectory, durableMoveSelected);
+#if LOCAL_ATOMIC_DIRECTORY_CANDIDATE
             if (LocalAtomicDirectoryBackend.IsEnabled(stateDirectory))
                 protocol.ConfigureAtomicDirectoryBackend(new(roots, stateDirectory!), ready.Capabilities);
 #endif

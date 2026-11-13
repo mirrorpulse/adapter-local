@@ -1,4 +1,5 @@
 #if LOCAL_ATOMIC_DIRECTORY_CANDIDATE
+using MirrorPulse.Adapter.Local.Worker;
 using MirrorPulse.Adapter.Sdk;
 
 namespace MirrorPulse.Adapter.Local.Worker.Tests;
@@ -6,6 +7,38 @@ namespace MirrorPulse.Adapter.Local.Worker.Tests;
 [TestClass]
 public sealed class LocalAtomicWorkerProcessTests
 {
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task AtomicAdmissionCannotAdoptAPendingOrCommittedOrdinaryDirectoryMove(bool committed)
+    {
+        using var fixture = new Fixture();
+        string original = Path.Combine(fixture.Source, "empty");
+        Directory.CreateDirectory(original);
+        var paths = new LocalWorkerPaths(fixture.Source);
+        string revision = await LocalFileOperations.RevisionAsync(paths, "empty", CancellationToken.None)
+            ?? throw new InvalidOperationException("The disposable source directory was not created.");
+        var move = new AdapterOperationRequest(Guid.NewGuid(), "docs", "empty", "docs", "moved-empty",
+            new(revision, true), true);
+        if (committed)
+            await LocalFileOperations.MoveDirectoryDurablyAsync(fixture.Instance, paths, paths, move, fixture.State);
+        else
+            await Assert.ThrowsExactlyAsync<IOException>(() => LocalFileOperations.MoveDirectoryDurablyAsync(
+                fixture.Instance, paths, paths, move, fixture.State, (point, _) =>
+                    point == LocalDirectoryMoveCheckpoint.AfterSourceChecked
+                        ? ValueTask.FromException(new IOException("Synthetic precommit interruption.")) : ValueTask.CompletedTask));
+        string retainedPath = committed ? "moved-empty" : "empty";
+        var request = new AdapterDirectoryAdmissionRequest(1, fixture.Instance, Guid.NewGuid(),
+            [new("Delete", new(move.OperationId, "docs", retainedPath, Preconditions: new(revision), IsDirectory: true))], string.Empty);
+        request = request with { RequestFingerprint = request.CalculateFingerprint() };
+        await using var worker = await LocalWorkerSession.StartAtomicAsync(fixture.Root, fixture.Instance);
+        var exchange = await worker.ExchangeAtomicAsync(AdapterOriginalDirectoryWire.AdmissionRequestMessage, request);
+        AssertError(exchange.Response, "OriginalAtomicDirectoryOperationAlreadyOwned");
+        Assert.IsTrue(Directory.Exists(Path.Combine(fixture.Source, retainedPath)));
+        Assert.IsFalse(Directory.Exists(Path.Combine(fixture.Source, committed ? "empty" : "moved-empty")));
+        fixture.RequireOriginals();
+    }
+
     [TestMethod]
     public async Task AtomicWorkerCommitsExactAdmittedOriginalsAndReplaysAfterProcessRestart()
     {

@@ -8,7 +8,7 @@ namespace MirrorPulse.Adapter.Local.Worker;
 
 /// <summary>One reader multiplexes control and bounded SDK transfer frames for all authorized roots.</summary>
 internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, AdapterWorkerProcessArguments arguments,
-    LocalWorkerRoots roots, string cache) : IAsyncDisposable
+    LocalWorkerRoots roots, string cache, string? stateDirectory, bool durableMoveSelected) : IAsyncDisposable
 {
     private readonly Dictionary<Guid, PendingUpload> _uploads = [];
     private readonly Dictionary<Guid, AcceptedUpload> _accepted = [];
@@ -90,13 +90,19 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
         try
         {
             if (command.MessageType == AdapterOriginalDirectoryWire.AdmissionRequestMessage)
+            {
+                var request = AdapterOriginalDirectoryWire.ReadAdmissionRequest(command, _atomicCapabilities);
+                if (request.Operations.Any(value => LocalFileOperations.HasDirectoryMoveOwnership(stateDirectory, value.Operation.OperationId)))
+                    throw new InvalidDataException("OriginalAtomicDirectoryOperationAlreadyOwned");
                 response = await AdapterOriginalDirectoryDispatcher.DispatchAsync(command, _atomicCapabilities, backend, token).ConfigureAwait(false);
+            }
             else
             {
                 var request = AdapterAtomicDirectoryDeletionWire.ReadRequest(command, _atomicCapabilities);
                 var activeUploads = _uploads.Values.Select(upload => upload.Operation.OperationId).ToHashSet();
                 if (request.OriginalRequest.Operations.Any(value =>
-                    _accepted.ContainsKey(value.Operation.OperationId) || activeUploads.Contains(value.Operation.OperationId)))
+                    _accepted.ContainsKey(value.Operation.OperationId) || activeUploads.Contains(value.Operation.OperationId) ||
+                    LocalFileOperations.HasDirectoryMoveOwnership(stateDirectory, value.Operation.OperationId)))
                     throw new InvalidDataException("OriginalAtomicDirectoryOperationAlreadyOwned");
                 response = await AdapterAtomicDirectoryDeletionDispatcher.DispatchAsync(command, _atomicCapabilities, backend, token).ConfigureAwait(false);
             }
@@ -174,6 +180,7 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
     {
         AdapterOperationRequest operation = DecodeOperation(command);
         AdapterProtocolJson.ValidateMutation(operation, requiresDestination: false);
+        LocalFileOperations.RequireNoDurableDirectoryMove(stateDirectory, operation.OperationId);
 #if LOCAL_ATOMIC_DIRECTORY_CANDIDATE
         _atomicDirectories?.RequireOrdinaryOperation(operation.OperationId);
 #endif
@@ -277,6 +284,9 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
         }
         else operation = DecodeOperation(command);
         AdapterProtocolJson.ValidateMutation(operation, requiresDestination: command.MessageType == "Move");
+        bool durableMove = command.MessageType == "Move" && operation.IsDirectory && durableMoveSelected;
+        if (!durableMove)
+            LocalFileOperations.RequireNoDurableDirectoryMove(stateDirectory, operation.OperationId);
 #if LOCAL_ATOMIC_DIRECTORY_CANDIDATE
         _atomicDirectories?.RequireOrdinaryOperation(operation.OperationId);
 #endif
@@ -284,7 +294,14 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
         LocalWorkerPaths? destination = command.MessageType == "Move" ? roots.GetPaths(operation.DestinationRootKey!) : null;
         string fingerprint = Fingerprint(command.MessageType, operation, null);
         string? revision;
-        if (_accepted.TryGetValue(operation.OperationId, out AcceptedUpload? accepted))
+        if (durableMove)
+        {
+            if (_accepted.ContainsKey(operation.OperationId) || _uploads.Values.Any(upload => upload.Operation.OperationId == operation.OperationId))
+                throw new InvalidDataException("OperationBindingMismatch");
+            revision = await LocalFileOperations.MoveDirectoryDurablyAsync(arguments.InstanceId, paths, destination!, operation,
+                stateDirectory!, cancellationToken: token).ConfigureAwait(false);
+        }
+        else if (_accepted.TryGetValue(operation.OperationId, out AcceptedUpload? accepted))
         {
             if (accepted.Fingerprint != fingerprint) throw new InvalidDataException("OperationBindingMismatch");
             revision = accepted.Revision;
@@ -312,7 +329,7 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
         string code = exception switch
         {
             LocalRecoveryRequiredException => "MutationOutcomeAmbiguous",
-            NativeFileException { NativeError: 32 or 33 } => "RemoteConflict",
+            NativeFileException { NativeError: 32 or 33 or 6800 or 6801 } => "RemoteConflict",
             NativeFileException { NativeError: 80 or 183 } => "DestinationExists",
             NativeFileException { NativeError: 145 } => "DirectoryNotEmpty",
             NativeFileException { NativeError: 1 or 17 or 50 or 87 } => "CapabilityUnavailable",

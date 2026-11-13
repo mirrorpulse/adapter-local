@@ -11,9 +11,9 @@ cancellation and immediate transfer lease cleanup.
 
 The Worker supports listing, stat, range reads, conditional uploads, directory
 creation, same-volume moves, file deletion, and empty-directory deletion. Moves
-never replace existing destinations. Nonempty directories require explicit
-child operations; the Worker does not recursively delete unaccepted children.
-The Worker does not receive a persistent state directory.
+never replace existing destinations. The Worker does not recursively delete
+unaccepted children. A Host may grant a private persistent state directory
+separate from the source and transfer cache.
 
 The [original directory admission work](docs/original-directory-effects.md)
 adds bounded native tree observations. It does not enable recursive deletion or
@@ -38,6 +38,14 @@ compare-and-swap primitive or a security sandbox against another privileged
 process. Unsupported cross-volume moves and native operations are rejected.
 Session replay receipts are bounded and kept in memory; after Worker restart,
 the Host must reconcile an unacknowledged mutation rather than infer success.
+When both peers select `local-durable-directory-move`, directory `Move` instead
+uses a same-volume NTFS transaction to rename the container and commit its
+receipt together. The Host supplies the original directory revision and requires
+an absent target. An identical request can recover the receipt after a Worker
+restart without inspecting the old source or target occupants. The receipt
+accepts the container rename. Descendant content and revisions remain separate
+from the move receipt. If the selected durable path cannot run, the Worker
+returns an error before performing a non-transactional rename.
 
 Native contracts: [CreateFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew),
 [file rename information](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_rename_info),
@@ -97,5 +105,5 @@ mode so a tested preview cannot be confused with an older stable package.
 
 The [original-directory boundary review](docs/original-directory-effects.md)
 describes bounded read-only admission and the isolated native qualification
-tool. The tool identifies a remaining original-parent history gap; it does not
-enable recursive effects or introduce transactions into the shipping Worker.
+tool. The shipping Worker uses the transaction primitive for negotiated directory
+moves. The unqualified recursive deletion probe remains isolated from it.
