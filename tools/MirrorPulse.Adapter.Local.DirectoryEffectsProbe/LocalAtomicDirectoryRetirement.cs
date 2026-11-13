@@ -46,10 +46,15 @@ internal static partial class LocalFileOperations
         Guid instanceId, Guid admissionId, string rootKey, string relative, IReadOnlyDictionary<string, Guid> originalOperations,
         string stateDirectory, bool enableExperimentalNtfsTransactions, CancellationToken token, bool fenceParentNamespace = false,
         bool verifyVolumeHistory = false, IReadOnlyList<AdapterOperationRequest>? originalRequests = null, string? originalRequestFingerprint = null,
-        bool requireRetainedAdmission = false)
+        bool requireRetainedAdmission = false, bool configuredSource = false)
     {
         RequireExperimentalAtomicDirectoryBackend(enableExperimentalNtfsTransactions);
-        RequireOwnedProbeFixture(paths);
+        if (configuredSource)
+        {
+            if (originalRequests is null || originalRequestFingerprint is null || !verifyVolumeHistory)
+                throw new InvalidDataException("ConfiguredDirectoryEffectRequiresBoundOriginalHistory");
+        }
+        else RequireOwnedProbeFixture(paths);
         if (instanceId == Guid.Empty || admissionId == Guid.Empty) throw new InvalidDataException("DirectoryAdmissionRequired");
         ArgumentNullException.ThrowIfNull(originalOperations);
         string state = RequireAtomicStateDirectory(paths, stateDirectory);
@@ -130,16 +135,22 @@ internal static partial class LocalFileOperations
         return admission;
     }
 
-    /// <summary>Characterizes leaf-first removals and a receipt in one NTFS transaction inside an owned disposable fixture.</summary>
-    /// <remarks>Not a production effect or SDK receipt: directory USNs do not establish complete original-parent history.</remarks>
+    /// <summary>Commits the complete original subtree removal and its receipt in one NTFS transaction.</summary>
+    /// <remarks>Configured sources require the bound original request, complete history and Host authorization.
+    /// Earlier characterization modes retain the owned disposable fixture boundary.</remarks>
     internal static async Task<LocalAtomicDirectoryReceipt> RetireAtomicDirectoryAsync(LocalWorkerPaths paths,
         LocalAtomicDirectoryAdmission admission, string stateDirectory, bool enableExperimentalNtfsTransactions,
         Func<LocalAtomicDirectoryCheckpoint, CancellationToken, ValueTask>? checkpoint, CancellationToken token,
-        LocalAtomicDirectoryAuthorization? authorization = null)
+        LocalAtomicDirectoryAuthorization? authorization = null, bool configuredSource = false)
     {
         RequireExperimentalAtomicDirectoryBackend(enableExperimentalNtfsTransactions);
-        RequireOwnedProbeFixture(paths);
         ArgumentNullException.ThrowIfNull(admission);
+        if (configuredSource)
+        {
+            if (admission.Version != 4 || admission.WireBinding is null || authorization?.SdkRequestFingerprint is null)
+                throw new InvalidDataException("ConfiguredDirectoryEffectRequiresBoundHostAuthorization");
+        }
+        else RequireOwnedProbeFixture(paths);
         if (admission.Version is not (1 or 2 or 3 or 4) || (admission.Version >= 3) != (admission.History is not null) ||
             (admission.Version == 4) != (admission.WireBinding is not null) ||
             admission.History is { } boundHistory && (boundHistory.DirectParent == Guid.Empty || boundHistory.Start is null) ||

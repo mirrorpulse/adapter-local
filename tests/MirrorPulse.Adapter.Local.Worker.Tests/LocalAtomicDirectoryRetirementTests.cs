@@ -84,11 +84,12 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
         internal string Tree { get; }
         internal string Peer { get; }
         internal string DirectoryPath => _directory;
-        internal Fixture()
+        internal Fixture(bool configuredSource = false)
         {
-            string source = Path.Combine(_directory, "source"); State = Path.Combine(_directory, "state"); Tree = Path.Combine(source, "tree");
+            string source = Path.Combine(_directory, configuredSource ? "configured-storage" : "source");
+            State = Path.Combine(_directory, "state"); Tree = Path.Combine(source, "tree");
             Directory.CreateDirectory(Path.Combine(Tree, "nested")); Directory.CreateDirectory(State);
-            File.WriteAllText(Path.Combine(_directory, ".mp-atomic-test-fixture"), Path.GetFileName(_directory));
+            if (!configuredSource) File.WriteAllText(Path.Combine(_directory, ".mp-atomic-test-fixture"), Path.GetFileName(_directory));
             File.WriteAllText(Path.Combine(Tree, "nested", "leaf.bin"), "original leaf bytes");
             File.WriteAllText(Path.Combine(Tree, "top.bin"), "original top bytes");
             Peer = Path.Combine(source, "peer.bin"); File.WriteAllText(Peer, "unrelated peer"); Paths = new(source);

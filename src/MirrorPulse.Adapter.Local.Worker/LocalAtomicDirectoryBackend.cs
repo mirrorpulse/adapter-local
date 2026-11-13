@@ -4,7 +4,7 @@ using MirrorPulse.Adapter.Sdk;
 
 namespace MirrorPulse.Adapter.Local.Worker;
 
-/// <summary>Adapts the qualified native fixture transaction to the candidate SDK on the real Worker pipe.</summary>
+/// <summary>Adapts the bound native directory transaction to the candidate SDK on the real Worker pipe.</summary>
 internal sealed class LocalAtomicDirectoryBackend(LocalWorkerRoots roots, string stateDirectory) :
     IAdapterOriginalDirectoryAdmissionBackend, IAdapterAtomicDirectoryDeletionBackend
 {
@@ -29,7 +29,8 @@ internal sealed class LocalAtomicDirectoryBackend(LocalWorkerRoots roots, string
             request.ManifestFingerprint, string.Empty, request.RequestFingerprint);
         authorization = authorization with { RequestFingerprint = authorization.CalculateFingerprint() };
         var receipt = await LocalFileOperations.RetireAtomicDirectoryAsync(paths, original, stateDirectory,
-            enableExperimentalNtfsTransactions: true, checkpoint: LoseFixtureReply, cancellationToken, authorization).ConfigureAwait(false);
+            enableExperimentalNtfsTransactions: true, checkpoint: LoseFixtureReply, cancellationToken, authorization,
+            configuredSource: true).ConfigureAwait(false);
         return new(1, original.InstanceId, original.AdmissionId, receipt.TransactionId, request.RequestFingerprint,
             retained.AdmissionFingerprint, request.ManifestFingerprint, receipt.Effects.Select((effect, ordinal) =>
                 new AdapterAtomicDirectoryDeletedOriginal(effect.OperationId, new(original.Original.RootKey, effect.Path),
@@ -70,7 +71,8 @@ internal sealed class LocalAtomicDirectoryBackend(LocalWorkerRoots roots, string
         var original = await LocalFileOperations.PrepareAtomicDirectoryRetirementAsync(paths, request.InstanceId, request.AdmissionId,
             root.RootKey, root.Path, operations.ToDictionary(value => value.Path, value => value.OperationId, StringComparer.Ordinal),
             stateDirectory, enableExperimentalNtfsTransactions: true, token, verifyVolumeHistory: true, originalRequests: operations,
-            originalRequestFingerprint: request.RequestFingerprint, requireRetainedAdmission: requireRetained).ConfigureAwait(false);
+            originalRequestFingerprint: request.RequestFingerprint, requireRetainedAdmission: requireRetained,
+            configuredSource: true).ConfigureAwait(false);
         return (paths, original);
     }
 

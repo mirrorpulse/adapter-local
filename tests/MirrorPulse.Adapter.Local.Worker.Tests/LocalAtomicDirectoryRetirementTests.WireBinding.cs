@@ -182,8 +182,9 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
             Operations = operations.Select(operation => new { OperationKind = "Delete", Operation = operation }).ToArray()
         })));
 
-    private static Task<LocalAtomicDirectoryAdmission> PrepareBoundAsync(Fixture fixture, BoundRequest request) =>
+    private static Task<LocalAtomicDirectoryAdmission> PrepareBoundAsync(Fixture fixture, BoundRequest request, bool configuredSource = false) =>
         ProbeFileOperations.PrepareAtomicDirectoryRetirementAsync(fixture.Paths, request.Instance, request.Admission, "docs", request.Relative,
             request.Operations.ToDictionary(operation => operation.Path, operation => operation.OperationId, StringComparer.Ordinal), fixture.State,
-            true, CancellationToken.None, verifyVolumeHistory: true, originalRequests: request.Operations, originalRequestFingerprint: request.Fingerprint);
+            true, CancellationToken.None, verifyVolumeHistory: true, originalRequests: request.Operations, originalRequestFingerprint: request.Fingerprint,
+            configuredSource: configuredSource);
 }
