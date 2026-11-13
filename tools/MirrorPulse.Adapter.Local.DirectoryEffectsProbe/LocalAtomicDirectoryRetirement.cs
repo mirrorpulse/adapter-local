@@ -4,13 +4,37 @@ using MirrorPulse.Adapter.Sdk;
 
 namespace MirrorPulse.Adapter.Local.Worker;
 
-internal sealed record LocalAtomicDirectoryEntry(Guid OperationId, LocalDirectoryTreeEntry Original, long OriginalFileUsn);
+internal sealed record LocalAtomicDirectoryEntry(Guid OperationId, LocalDirectoryTreeEntry Original, long OriginalFileUsn,
+    string? OriginalGeneration = null);
+internal sealed record LocalAtomicDirectoryHistory(AtomicDirectoryJournalCheckpoint Start, Guid DirectParent);
 internal sealed record LocalAtomicDirectoryAdmission(int Version, Guid InstanceId, Guid AdmissionId, string SourceRootIdentity,
-    string StateDirectoryIdentity, LocalDirectoryTreeObservation Original, IReadOnlyList<LocalAtomicDirectoryEntry> Entries, string Fingerprint);
+    string StateDirectoryIdentity, LocalDirectoryTreeObservation Original, IReadOnlyList<LocalAtomicDirectoryEntry> Entries, string Fingerprint,
+    LocalAtomicDirectoryHistory? History = null, LocalAtomicDirectoryWireBinding? WireBinding = null);
 internal sealed record LocalAtomicDirectoryEffect(Guid OperationId, string Path, string NativeIdentity, long OriginalFileUsn, string OriginalRevision);
+// Native authorization is separate from the optional SDK wire. A future Worker
+// must correlate its public admission with this retained native admission.
+internal sealed record LocalAtomicDirectoryAuthorization(Guid InstanceId, Guid AdmissionId, string NativeAdmissionFingerprint,
+    string ManifestFingerprint, string RequestFingerprint, string? SdkRequestFingerprint = null)
+{
+    internal string CalculateFingerprint() => Convert.ToHexString(SHA256.HashData(AdapterProtocolJson.Encode(new
+    {
+        kind = "NativeAtomicDirectoryAuthorization",
+        version = 1,
+        InstanceId,
+        AdmissionId,
+        NativeAdmissionFingerprint,
+        ManifestFingerprint,
+        SdkRequestFingerprint,
+    })));
+}
 internal sealed record LocalAtomicDirectoryReceipt(int Version, Guid InstanceId, Guid AdmissionId, Guid TransactionId,
-    string AdmissionFingerprint, IReadOnlyList<LocalAtomicDirectoryEffect> Effects, DateTimeOffset PreparedAt);
-internal enum LocalAtomicDirectoryCheckpoint { AfterOriginalsLocked, AfterFirstChildStaged, AfterParentStaged, AfterReceiptStaged, AfterCommit }
+    string AdmissionFingerprint, IReadOnlyList<LocalAtomicDirectoryEffect> Effects, DateTimeOffset PreparedAt,
+    long? HistoryVerifiedThrough = null, LocalAtomicDirectoryAuthorization? Authorization = null);
+internal enum LocalAtomicDirectoryCheckpoint
+{
+    AfterOriginalsLocked, AfterFirstChildStaged, AfterParentStaged, AfterReceiptStaged, AfterCommit,
+    AfterAuthorizationStaged, AfterAuthorizationCommitted
+}
 
 internal static partial class LocalFileOperations
 {
@@ -20,14 +44,44 @@ internal static partial class LocalFileOperations
     /// <remarks>This experimental NTFS backend is never inferred from ordinary Local or protocol-v2 support.</remarks>
     internal static async Task<LocalAtomicDirectoryAdmission> PrepareAtomicDirectoryRetirementAsync(LocalWorkerPaths paths,
         Guid instanceId, Guid admissionId, string rootKey, string relative, IReadOnlyDictionary<string, Guid> originalOperations,
-        string stateDirectory, bool enableExperimentalNtfsTransactions, CancellationToken token, bool fenceParentNamespace = false)
+        string stateDirectory, bool enableExperimentalNtfsTransactions, CancellationToken token, bool fenceParentNamespace = false,
+        bool verifyVolumeHistory = false, IReadOnlyList<AdapterOperationRequest>? originalRequests = null, string? originalRequestFingerprint = null,
+        bool requireRetainedAdmission = false, bool configuredSource = false)
     {
         RequireExperimentalAtomicDirectoryBackend(enableExperimentalNtfsTransactions);
-        RequireOwnedProbeFixture(paths);
+        if (configuredSource)
+        {
+            if (originalRequests is null || originalRequestFingerprint is null || !verifyVolumeHistory)
+                throw new InvalidDataException("ConfiguredDirectoryEffectRequiresBoundOriginalHistory");
+        }
+        else RequireOwnedProbeFixture(paths);
         if (instanceId == Guid.Empty || admissionId == Guid.Empty) throw new InvalidDataException("DirectoryAdmissionRequired");
         ArgumentNullException.ThrowIfNull(originalOperations);
         string state = RequireAtomicStateDirectory(paths, stateDirectory);
         using var stateAncestors = new DirectoryLease(state);
+        string admissionPath = Path.Combine(state, admissionId.ToString("N") + ".admission.json");
+        if (originalRequests is not null || originalRequestFingerprint is not null)
+        {
+            originalRequests = originalRequests?.ToArray() ?? throw new InvalidDataException("CompleteOriginalDirectoryRequestRequired");
+            RequireBoundRequest(instanceId, admissionId, rootKey, relative, originalOperations, originalRequests, originalRequestFingerprint);
+            if (!verifyVolumeHistory) throw new InvalidDataException("BoundOriginalDirectoryHistoryRequired");
+            if (File.Exists(admissionPath))
+            {
+                var prior = AdapterProtocolJson.Decode<LocalAtomicDirectoryAdmission>(await ReadAtomicEvidenceAsync(admissionPath, token).ConfigureAwait(false));
+                RequireWireBinding(prior);
+                if (prior.InstanceId != instanceId || prior.AdmissionId != admissionId || prior.Original.RootKey != rootKey ||
+                    prior.Original.Path != relative || prior.WireBinding!.RequestFingerprint != originalRequestFingerprint ||
+                    !prior.WireBinding.Operations.SequenceEqual(originalRequests))
+                    throw new InvalidDataException("OriginalBoundDirectoryAdmissionChanged");
+                using var retainedRoot = ProtectedObject.TryOpen(paths.ResolveDirectory(string.Empty), mutate: false) ?? throw new DirectoryNotFoundException();
+                using var retainedState = ProtectedObject.TryOpen(state, mutate: false) ?? throw new DirectoryNotFoundException();
+                RequireAtomicRootAndStateIdentity(prior, retainedRoot, retainedState);
+                return prior;
+            }
+        }
+        if (requireRetainedAdmission) throw new InvalidDataException("RetainedOriginalDirectoryAdmissionRequired");
+        using var journal = verifyVolumeHistory ? AtomicDirectoryJournal.Open(paths.ResolveDirectory(string.Empty)) : null;
+        var historyStart = journal?.Capture();
         var observed = await ObserveDirectoryTreeAsync(paths, admissionId, rootKey, relative, token).ConfigureAwait(false);
         if (originalOperations.Count != observed.Entries.Count || originalOperations.Values.Any(value => value == Guid.Empty) ||
             originalOperations.Values.Distinct().Count() != originalOperations.Count ||
@@ -50,28 +104,60 @@ internal static partial class LocalFileOperations
             long usn = AtomicDirectoryNative.ReadFileUsn(item.Handle);
             RequireSame(before, Native.Information(item.Handle));
             if (usn <= 0) throw new NotSupportedException("DirectoryEffectsRequireOriginalFileJournalSequence");
-            entries.Add(new(originalOperations[entry.Path], entry, usn));
+            entries.Add(new(originalOperations[entry.Path], entry, usn, originalRequests is null ? null : RevisionGeneration(item.Handle)));
         }
-        var admission = new LocalAtomicDirectoryAdmission(fenceParentNamespace ? 2 : 1, instanceId, admissionId, Identity(rootInfo), Identity(stateInfo),
-            observed, new ReadOnlyCollection<LocalAtomicDirectoryEntry>(entries), string.Empty);
+        LocalAtomicDirectoryHistory? history = null;
+        if (historyStart is not null)
+        {
+            string parentPath = Path.GetDirectoryName(paths.ResolveDirectory(relative))!;
+            using var parent = ProtectedObject.TryOpen(parentPath, mutate: false) ?? throw new DirectoryNotFoundException();
+            var parentId = Native.Identity(parent.Handle).FileId;
+            if (parentId == Guid.Empty || Identity(Native.Information(parent.Handle)) != observed.ParentNativeIdentity)
+                throw new InvalidDataException("OriginalAtomicDirectoryParentChanged");
+            history = new(historyStart, parentId);
+        }
+        var binding = originalRequests is null ? null : await CaptureWireBindingAsync(paths, originalRequests,
+            originalRequestFingerprint!, observed, token).ConfigureAwait(false);
+        var admission = new LocalAtomicDirectoryAdmission(binding is not null ? 4 : history is not null ? 3 : fenceParentNamespace ? 2 : 1, instanceId,
+            admissionId, Identity(rootInfo), Identity(stateInfo), observed, new ReadOnlyCollection<LocalAtomicDirectoryEntry>(entries),
+            string.Empty, history, binding);
         admission = admission with { Fingerprint = AtomicFingerprint(admission) };
+        if (binding is not null) RequireWireBinding(admission);
         byte[] payload = AtomicPayload(admission);
-        await WriteOriginalAtomicAdmissionAsync(Path.Combine(state, admissionId.ToString("N") + ".admission.json"), payload, token).ConfigureAwait(false);
+        if (binding is null) await WriteOriginalAtomicAdmissionAsync(admissionPath, payload, token).ConfigureAwait(false);
+        else
+        {
+            using var transaction = AtomicDirectoryNative.Begin();
+            AtomicDirectoryNative.WriteReceipt(admissionPath, payload, transaction);
+            token.ThrowIfCancellationRequested();
+            AtomicDirectoryNative.Commit(transaction);
+        }
         return admission;
     }
 
-    /// <summary>Characterizes leaf-first removals and a receipt in one NTFS transaction inside an owned disposable fixture.</summary>
-    /// <remarks>Not a production effect or SDK receipt: directory USNs do not establish complete original-parent history.</remarks>
+    /// <summary>Commits the complete original subtree removal and its receipt in one NTFS transaction.</summary>
+    /// <remarks>Configured sources require the bound original request, complete history and Host authorization.
+    /// Earlier characterization modes retain the owned disposable fixture boundary.</remarks>
     internal static async Task<LocalAtomicDirectoryReceipt> RetireAtomicDirectoryAsync(LocalWorkerPaths paths,
         LocalAtomicDirectoryAdmission admission, string stateDirectory, bool enableExperimentalNtfsTransactions,
-        Func<LocalAtomicDirectoryCheckpoint, CancellationToken, ValueTask>? checkpoint, CancellationToken token)
+        Func<LocalAtomicDirectoryCheckpoint, CancellationToken, ValueTask>? checkpoint, CancellationToken token,
+        LocalAtomicDirectoryAuthorization? authorization = null, bool configuredSource = false)
     {
         RequireExperimentalAtomicDirectoryBackend(enableExperimentalNtfsTransactions);
-        RequireOwnedProbeFixture(paths);
         ArgumentNullException.ThrowIfNull(admission);
-        if (admission.Version is not (1 or 2) || admission.InstanceId == Guid.Empty || admission.AdmissionId == Guid.Empty ||
+        if (configuredSource)
+        {
+            if (admission.Version != 4 || admission.WireBinding is null || authorization?.SdkRequestFingerprint is null)
+                throw new InvalidDataException("ConfiguredDirectoryEffectRequiresBoundHostAuthorization");
+        }
+        else RequireOwnedProbeFixture(paths);
+        if (admission.Version is not (1 or 2 or 3 or 4) || (admission.Version >= 3) != (admission.History is not null) ||
+            (admission.Version == 4) != (admission.WireBinding is not null) ||
+            admission.History is { } boundHistory && (boundHistory.DirectParent == Guid.Empty || boundHistory.Start is null) ||
+            admission.InstanceId == Guid.Empty || admission.AdmissionId == Guid.Empty ||
             admission.Entries is not { Count: >= 1 and <= 2048 } || admission.Fingerprint != AtomicFingerprint(admission))
             throw new InvalidDataException("OriginalAtomicDirectoryAdmissionRequired");
+        if (admission.Version == 4) RequireWireBinding(admission);
         new AdapterFileAddress(admission.Original.RootKey, admission.Original.Path).Validate();
         if (admission.Original.Path.Length == 0 || admission.Original.AdmissionId != admission.AdmissionId)
             throw new InvalidDataException("RootMutationForbidden");
@@ -83,27 +169,32 @@ internal static partial class LocalFileOperations
         string receiptPath = Path.Combine(state, admission.AdmissionId.ToString("N") + ".committed.json");
         using var root = ProtectedObject.TryOpen(paths.ResolveDirectory(string.Empty), mutate: false) ?? throw new DirectoryNotFoundException();
         using var stateObject = ProtectedObject.TryOpen(state, mutate: false) ?? throw new DirectoryNotFoundException();
-        var sourceRootInfo = Native.Information(root.Handle); var stateInfo = Native.Information(stateObject.Handle);
-        if (Identity(sourceRootInfo) != admission.SourceRootIdentity || Identity(stateInfo) != admission.StateDirectoryIdentity ||
-            sourceRootInfo.Volume != stateInfo.Volume) throw new InvalidDataException("AtomicDirectorySourceOrStateGenerationChanged");
+        RequireAtomicRootAndStateIdentity(admission, root, stateObject);
+        await RequireAtomicAuthorizationAsync(admission, authorization, state, checkpoint, token).ConfigureAwait(false);
         // A matching committed receipt is historical evidence only. In particular,
         // replay never opens or mutates a later tree at the same source path.
-        if (File.Exists(receiptPath)) return ReadAtomicReceipt(admission, await ReadAtomicEvidenceAsync(receiptPath, token).ConfigureAwait(false));
+        if (File.Exists(receiptPath)) return ReadAtomicReceipt(admission, await ReadAtomicEvidenceAsync(receiptPath, token).ConfigureAwait(false), authorization);
         token.ThrowIfCancellationRequested();
         string source = paths.ResolveDirectory(admission.Original.Path);
-        using var sourceAncestors = new DirectoryLease(Path.GetDirectoryName(source)!);
-        using var originalParent = ProtectedObject.TryOpen(Path.GetDirectoryName(source)!, mutate: false) ?? throw new DirectoryNotFoundException();
+        string parentPath = Path.GetDirectoryName(source)!;
+        using var sourceAncestors = new DirectoryLease(parentPath);
+        using var originalParent = ProtectedObject.TryOpen(parentPath, mutate: false) ?? throw new DirectoryNotFoundException();
         if (Identity(Native.Information(originalParent.Handle)) != admission.Original.ParentNativeIdentity)
             throw new InvalidDataException("OriginalAtomicDirectoryParentChanged");
-        using var atomicAncestors = admission.Version == 2 ? new AtomicAncestorLease(state, Path.GetDirectoryName(source)!) : null;
+        if (admission.WireBinding is { } binding && RevisionGeneration(originalParent.Handle) != binding.Parent.OriginalGeneration)
+            throw new InvalidDataException("OriginalBoundDirectoryParentGenerationChanged");
+        using var atomicAncestors = admission.Version >= 2 ? new AtomicAncestorLease(state,
+            admission.History is not null ? Path.GetDirectoryName(parentPath)! : parentPath) : null;
+        using var journal = admission.History is not null ? AtomicDirectoryJournal.Open(source) : null;
         using var transaction = AtomicDirectoryNative.Begin();
         var opened = new Dictionary<string, AtomicDirectoryNative.Item>(StringComparer.Ordinal);
         var originalDirectories = new Dictionary<string, Microsoft.Win32.SafeHandles.SafeFileHandle>(StringComparer.Ordinal);
         var originalChangeTimes = new Dictionary<string, long>(StringComparer.Ordinal);
         AtomicDirectoryNative.Item? namespaceFence = null;
+        AtomicDirectoryNative.Item? parentFence = null;
         try
         {
-            if (admission.Version == 2)
+            if (admission.Version >= 2)
             {
                 // Keep no-delete ancestor bindings while allowing our own transacted
                 // parent metadata writes. The ordinary Worker and version1 keep their
@@ -112,7 +203,16 @@ internal static partial class LocalFileOperations
                 root.Dispose(); stateObject.Dispose(); originalParent.Dispose();
                 // Acquire the write-conflicting namespace before observing any current
                 // original. Keep version1 unchanged as the retained history-gap control.
-                string temporary = Path.Combine(Path.GetDirectoryName(source)!, ".mp-atomic-stage-" + admission.AdmissionId.ToString("N"));
+                if (admission.History is { } history)
+                {
+                    parentFence = AtomicDirectoryNative.Open(parentPath, transaction);
+                    if (Native.Identity(parentFence.Handle).FileId != history.DirectParent)
+                        throw new InvalidDataException("OriginalAtomicDirectoryParentChanged");
+                    string temporaryParent = Path.Combine(Path.GetDirectoryName(parentPath)!,
+                        ".mp-atomic-parent-" + admission.AdmissionId.ToString("N"));
+                    AtomicDirectoryNative.FenceNamespace(parentPath, temporaryParent, transaction);
+                }
+                string temporary = Path.Combine(parentPath, ".mp-atomic-stage-" + admission.AdmissionId.ToString("N"));
                 namespaceFence = AtomicDirectoryNative.Open(source, transaction);
                 AtomicDirectoryNative.FenceNamespace(source, temporary, transaction);
             }
@@ -136,16 +236,29 @@ internal static partial class LocalFileOperations
                 var info = Native.Information(item.Handle);
                 if (Identity(info) != entry.Original.NativeIdentity || item.IsDirectory != entry.Original.IsDirectory ||
                     !item.IsDirectory && info.Links != 1 || await item.RevisionAsync(token).ConfigureAwait(false) != entry.Original.Revision ||
-                    AtomicDirectoryNative.ReadFileUsn(item.Handle) != entry.OriginalFileUsn)
+                    AtomicDirectoryNative.ReadFileUsn(item.Handle) != entry.OriginalFileUsn ||
+                    entry.OriginalGeneration is { } generation && RevisionGeneration(item.Handle) != generation)
                     throw new InvalidDataException("OriginalAtomicDirectoryGenerationOrRevisionChanged");
             }
             var actual = ReadAtomicTreeInventory(source, admission.Original.Path, token);
             if (!actual.SetEquals(admission.Entries.Select(entry => entry.Original.Path)))
                 throw new InvalidDataException("OriginalAtomicDirectoryInventoryChanged");
+            long? historyVerifiedThrough = null;
+            if (admission.History is { } historyToVerify)
+            {
+                var objects = new HashSet<Guid> { historyToVerify.DirectParent };
+                var parents = new HashSet<Guid> { historyToVerify.DirectParent };
+                foreach (var item in opened.Values)
+                {
+                    Guid id = Native.Identity(item.Handle).FileId;
+                    objects.Add(id);
+                    if (item.IsDirectory) parents.Add(id);
+                }
+                historyVerifiedThrough = journal!.RequireUnchanged(historyToVerify.Start, objects, parents, token);
+            }
             await CheckpointAsync(LocalAtomicDirectoryCheckpoint.AfterOriginalsLocked, token).ConfigureAwait(false);
             var effects = new List<LocalAtomicDirectoryEffect>(admission.Entries.Count);
-            foreach (var entry in admission.Entries.OrderByDescending(entry => entry.Original.Path.Count(character => character == '/'))
-                .ThenBy(entry => entry.Original.Path, StringComparer.Ordinal))
+            foreach (var entry in AtomicExecutionOrder(admission))
             {
                 token.ThrowIfCancellationRequested();
                 string path = paths.ResolveDirectory(entry.Original.Path);
@@ -165,7 +278,7 @@ internal static partial class LocalFileOperations
                     AtomicDirectoryNative.ReadChangeTime(originalDirectories[entry.Original.Path]) != originalChangeTimes[entry.Original.Path])
                     throw new InvalidDataException("UnownedOriginalDirectoryJournalChange");
             var receipt = new LocalAtomicDirectoryReceipt(admission.Version, admission.InstanceId, admission.AdmissionId, AtomicDirectoryNative.Id(transaction),
-                admission.Fingerprint, new ReadOnlyCollection<LocalAtomicDirectoryEffect>(effects), DateTimeOffset.UtcNow);
+                admission.Fingerprint, new ReadOnlyCollection<LocalAtomicDirectoryEffect>(effects), DateTimeOffset.UtcNow, historyVerifiedThrough, authorization);
             AtomicDirectoryNative.WriteReceipt(receiptPath, AtomicPayload(receipt), transaction);
             await CheckpointAsync(LocalAtomicDirectoryCheckpoint.AfterReceiptStaged, token).ConfigureAwait(false);
             token.ThrowIfCancellationRequested();
@@ -173,7 +286,7 @@ internal static partial class LocalFileOperations
             // Once committed, cancellation or a lost reply cannot roll back the
             // source. Both effect and receipt already share their durable boundary.
             await CheckpointAsync(LocalAtomicDirectoryCheckpoint.AfterCommit, CancellationToken.None).ConfigureAwait(false);
-            var readback = ReadAtomicReceipt(admission, await ReadAtomicEvidenceAsync(receiptPath, CancellationToken.None).ConfigureAwait(false));
+            var readback = ReadAtomicReceipt(admission, await ReadAtomicEvidenceAsync(receiptPath, CancellationToken.None).ConfigureAwait(false), authorization);
             if (!AtomicPayload(readback).AsSpan().SequenceEqual(AtomicPayload(receipt)))
                 throw new InvalidDataException("CommittedAtomicDirectoryReceiptChanged");
             return readback;
@@ -181,6 +294,7 @@ internal static partial class LocalFileOperations
         finally
         {
             namespaceFence?.Dispose();
+            parentFence?.Dispose();
             foreach (var item in opened.Values) item.Dispose();
             foreach (var original in originalDirectories.Values) original.Dispose();
         }
@@ -274,6 +388,56 @@ internal static partial class LocalFileOperations
     private static string AtomicFingerprint(LocalAtomicDirectoryAdmission admission) =>
         Convert.ToHexString(SHA256.HashData(AtomicPayload(admission with { Fingerprint = string.Empty })));
 
+    private static void RequireAtomicRootAndStateIdentity(LocalAtomicDirectoryAdmission admission, ProtectedObject root, ProtectedObject state)
+    {
+        var sourceRootInfo = Native.Information(root.Handle);
+        var stateInfo = Native.Information(state.Handle);
+        if (!root.IsDirectory || !state.IsDirectory || Identity(sourceRootInfo) != admission.SourceRootIdentity ||
+            Identity(stateInfo) != admission.StateDirectoryIdentity || sourceRootInfo.Volume != stateInfo.Volume)
+            throw new InvalidDataException("AtomicDirectorySourceOrStateGenerationChanged");
+    }
+
+    private static async Task RequireAtomicAuthorizationAsync(LocalAtomicDirectoryAdmission admission,
+        LocalAtomicDirectoryAuthorization? authorization, string state,
+        Func<LocalAtomicDirectoryCheckpoint, CancellationToken, ValueTask>? checkpoint, CancellationToken token)
+    {
+        string path = Path.Combine(state, admission.AdmissionId.ToString("N") + ".authorization.json");
+        var claims = admission.Entries.Select(entry => Path.Combine(state, "operation-" + entry.OperationId.ToString("N") + ".claim.json")).ToArray();
+        if (authorization is null)
+        {
+            if (admission.Version == 4 || File.Exists(path) || claims.Any(File.Exists)) throw new InvalidDataException("OriginalAtomicDirectoryAuthorizationRequired");
+            return;
+        }
+        static bool Digest(string value) => value is { Length: 64 } &&
+            value.All(character => character is >= '0' and <= '9' or >= 'A' and <= 'F');
+        if (admission.Version is not (3 or 4) || admission.History is null || authorization.InstanceId != admission.InstanceId ||
+            authorization.AdmissionId != admission.AdmissionId || authorization.NativeAdmissionFingerprint != admission.Fingerprint ||
+            !Digest(authorization.ManifestFingerprint) || !Digest(authorization.RequestFingerprint) ||
+            authorization.SdkRequestFingerprint is { } sdk && !Digest(sdk) ||
+            authorization.RequestFingerprint != authorization.CalculateFingerprint())
+            throw new InvalidDataException("OriginalAtomicDirectoryAuthorizationInvalid");
+        byte[] payload = AtomicPayload(authorization);
+        if (!File.Exists(path))
+        {
+            // An interrupted write must not leave a partial authorization. Persist
+            // this immutable reservation before attempting any source effects.
+            token.ThrowIfCancellationRequested();
+            if (claims.Any(File.Exists)) throw new InvalidDataException("OriginalAtomicDirectoryOperationAlreadyOwned");
+            using var transaction = AtomicDirectoryNative.Begin();
+            foreach (string claim in claims) AtomicDirectoryNative.WriteReceipt(claim, payload, transaction);
+            AtomicDirectoryNative.WriteReceipt(path, payload, transaction);
+            if (checkpoint is not null) await checkpoint(LocalAtomicDirectoryCheckpoint.AfterAuthorizationStaged, token).ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
+            AtomicDirectoryNative.Commit(transaction);
+            if (checkpoint is not null) await checkpoint(LocalAtomicDirectoryCheckpoint.AfterAuthorizationCommitted, token).ConfigureAwait(false);
+        }
+        if (!(await ReadAtomicEvidenceAsync(path, token).ConfigureAwait(false)).AsSpan().SequenceEqual(payload))
+            throw new InvalidDataException("OriginalAtomicDirectoryAuthorizationChanged");
+        foreach (string claim in claims)
+            if (!File.Exists(claim) || !(await ReadAtomicEvidenceAsync(claim, token).ConfigureAwait(false)).AsSpan().SequenceEqual(payload))
+                throw new InvalidDataException("OriginalAtomicDirectoryOperationClaimChanged");
+    }
+
     private static byte[] AtomicPayload<T>(T value)
     {
         byte[] payload = AdapterProtocolJson.Encode(value);
@@ -303,15 +467,17 @@ internal static partial class LocalFileOperations
         byte[] bytes = new byte[checked((int)stream.Length)]; await stream.ReadExactlyAsync(bytes, token).ConfigureAwait(false); return bytes;
     }
 
-    private static LocalAtomicDirectoryReceipt ReadAtomicReceipt(LocalAtomicDirectoryAdmission admission, byte[] payload)
+    private static LocalAtomicDirectoryReceipt ReadAtomicReceipt(LocalAtomicDirectoryAdmission admission, byte[] payload,
+        LocalAtomicDirectoryAuthorization? authorization)
     {
         var receipt = AdapterProtocolJson.Decode<LocalAtomicDirectoryReceipt>(payload);
         if (receipt.Version != admission.Version || receipt.InstanceId != admission.InstanceId || receipt.AdmissionId != admission.AdmissionId ||
             receipt.TransactionId == Guid.Empty || receipt.AdmissionFingerprint != admission.Fingerprint || receipt.Effects is null ||
-            receipt.Effects.Count != admission.Entries.Count || receipt.PreparedAt == default)
+            receipt.Effects.Count != admission.Entries.Count || receipt.PreparedAt == default || receipt.Authorization != authorization ||
+            (admission.History is null ? receipt.HistoryVerifiedThrough is not null
+                : receipt.HistoryVerifiedThrough is not { } through || through < admission.History.Start.NextUsn))
             throw new InvalidDataException("CommittedOriginalAtomicDirectoryReceiptRequired");
-        var expected = admission.Entries.OrderByDescending(entry => entry.Original.Path.Count(character => character == '/'))
-            .ThenBy(entry => entry.Original.Path, StringComparer.Ordinal)
+        var expected = AtomicExecutionOrder(admission)
             .Select(entry => new LocalAtomicDirectoryEffect(entry.OperationId, entry.Original.Path, entry.Original.NativeIdentity, entry.OriginalFileUsn, entry.Original.Revision));
         if (!expected.SequenceEqual(receipt.Effects)) throw new InvalidDataException("CommittedOriginalAtomicDirectoryEffectsChanged");
         return receipt;
