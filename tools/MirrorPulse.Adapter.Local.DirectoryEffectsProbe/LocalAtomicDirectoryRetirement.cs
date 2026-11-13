@@ -14,7 +14,7 @@ internal sealed record LocalAtomicDirectoryEffect(Guid OperationId, string Path,
 // Native authorization is separate from the optional SDK wire. A future Worker
 // must correlate its public admission with this retained native admission.
 internal sealed record LocalAtomicDirectoryAuthorization(Guid InstanceId, Guid AdmissionId, string NativeAdmissionFingerprint,
-    string ManifestFingerprint, string RequestFingerprint)
+    string ManifestFingerprint, string RequestFingerprint, string? SdkRequestFingerprint = null)
 {
     internal string CalculateFingerprint() => Convert.ToHexString(SHA256.HashData(AdapterProtocolJson.Encode(new
     {
@@ -24,6 +24,7 @@ internal sealed record LocalAtomicDirectoryAuthorization(Guid InstanceId, Guid A
         AdmissionId,
         NativeAdmissionFingerprint,
         ManifestFingerprint,
+        SdkRequestFingerprint,
     })));
 }
 internal sealed record LocalAtomicDirectoryReceipt(int Version, Guid InstanceId, Guid AdmissionId, Guid TransactionId,
@@ -44,7 +45,8 @@ internal static partial class LocalFileOperations
     internal static async Task<LocalAtomicDirectoryAdmission> PrepareAtomicDirectoryRetirementAsync(LocalWorkerPaths paths,
         Guid instanceId, Guid admissionId, string rootKey, string relative, IReadOnlyDictionary<string, Guid> originalOperations,
         string stateDirectory, bool enableExperimentalNtfsTransactions, CancellationToken token, bool fenceParentNamespace = false,
-        bool verifyVolumeHistory = false, IReadOnlyList<AdapterOperationRequest>? originalRequests = null, string? originalRequestFingerprint = null)
+        bool verifyVolumeHistory = false, IReadOnlyList<AdapterOperationRequest>? originalRequests = null, string? originalRequestFingerprint = null,
+        bool requireRetainedAdmission = false)
     {
         RequireExperimentalAtomicDirectoryBackend(enableExperimentalNtfsTransactions);
         RequireOwnedProbeFixture(paths);
@@ -72,6 +74,7 @@ internal static partial class LocalFileOperations
                 return prior;
             }
         }
+        if (requireRetainedAdmission) throw new InvalidDataException("RetainedOriginalDirectoryAdmissionRequired");
         using var journal = verifyVolumeHistory ? AtomicDirectoryJournal.Open(paths.ResolveDirectory(string.Empty)) : null;
         var historyStart = journal?.Capture();
         var observed = await ObserveDirectoryTreeAsync(paths, admissionId, rootKey, relative, token).ConfigureAwait(false);
@@ -399,6 +402,7 @@ internal static partial class LocalFileOperations
         if (admission.Version is not (3 or 4) || admission.History is null || authorization.InstanceId != admission.InstanceId ||
             authorization.AdmissionId != admission.AdmissionId || authorization.NativeAdmissionFingerprint != admission.Fingerprint ||
             !Digest(authorization.ManifestFingerprint) || !Digest(authorization.RequestFingerprint) ||
+            authorization.SdkRequestFingerprint is { } sdk && !Digest(sdk) ||
             authorization.RequestFingerprint != authorization.CalculateFingerprint())
             throw new InvalidDataException("OriginalAtomicDirectoryAuthorizationInvalid");
         byte[] payload = AtomicPayload(authorization);

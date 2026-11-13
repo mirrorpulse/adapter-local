@@ -9,7 +9,17 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="MirrorPulse.Adapter.Sdk" />
+    <PackageReference Include="MirrorPulse.Adapter.Sdk" Condition="'$(LocalAtomicSdkProject)' == ''" />
+    <ProjectReference Include="$(LocalAtomicSdkProject)" Condition="'$(LocalAtomicSdkProject)' != ''" />
+  </ItemGroup>
+
+  <PropertyGroup Condition="'$(LocalAtomicSdkProject)' != ''">
+    <DefineConstants>$(DefineConstants);LOCAL_ATOMIC_DIRECTORY_CANDIDATE</DefineConstants>
+    <IsPublishable>false</IsPublishable>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(LocalAtomicSdkProject)' != ''">
+    <Compile Include="../../tools/MirrorPulse.Adapter.Local.DirectoryEffectsProbe/LocalAtomicDirectory*.cs" Link="Candidate/%(Filename)%(Extension)" />
+    <Compile Include="../../tools/MirrorPulse.Adapter.Local.DirectoryEffectsProbe/AtomicDirectory*.cs" Link="Candidate/%(Filename)%(Extension)" />
   </ItemGroup>
 
 </Project>
