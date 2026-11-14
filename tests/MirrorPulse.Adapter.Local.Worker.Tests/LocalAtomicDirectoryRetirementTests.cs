@@ -1,13 +1,13 @@
 extern alias Probe;
 using System.ComponentModel;
 using System.Text.Json;
-using LocalAtomicDirectoryAdmission = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryAdmission;
-using LocalAtomicDirectoryAuthorization = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryAuthorization;
-using LocalAtomicDirectoryCheckpoint = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryCheckpoint;
-using LocalAtomicDirectoryEffect = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryEffect;
-using LocalAtomicDirectoryEntry = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryEntry;
-using LocalAtomicDirectoryReceipt = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryReceipt;
 using ProbeFileOperations = Probe::MirrorPulse.Adapter.Local.Worker.LocalFileOperations;
+using ProbeLocalAtomicDirectoryAdmission = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryAdmission;
+using ProbeLocalAtomicDirectoryAuthorization = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryAuthorization;
+using ProbeLocalAtomicDirectoryCheckpoint = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryCheckpoint;
+using ProbeLocalAtomicDirectoryEffect = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryEffect;
+using ProbeLocalAtomicDirectoryEntry = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryEntry;
+using ProbeLocalAtomicDirectoryReceipt = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryReceipt;
 using ProbeWorkerPaths = Probe::MirrorPulse.Adapter.Local.Worker.LocalWorkerPaths;
 
 namespace MirrorPulse.Adapter.Local.Worker.Tests;
@@ -34,13 +34,13 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
     }
 
     [TestMethod]
-    [DataRow(nameof(LocalAtomicDirectoryCheckpoint.AfterOriginalsLocked))]
-    [DataRow(nameof(LocalAtomicDirectoryCheckpoint.AfterFirstChildStaged))]
-    [DataRow(nameof(LocalAtomicDirectoryCheckpoint.AfterParentStaged))]
-    [DataRow(nameof(LocalAtomicDirectoryCheckpoint.AfterReceiptStaged))]
+    [DataRow(nameof(ProbeLocalAtomicDirectoryCheckpoint.AfterOriginalsLocked))]
+    [DataRow(nameof(ProbeLocalAtomicDirectoryCheckpoint.AfterFirstChildStaged))]
+    [DataRow(nameof(ProbeLocalAtomicDirectoryCheckpoint.AfterParentStaged))]
+    [DataRow(nameof(ProbeLocalAtomicDirectoryCheckpoint.AfterReceiptStaged))]
     public async Task BeforeCommitInterruptionRetainsAllOriginalBytesAndNoAcceptedReceipt(string cutName)
     {
-        var cut = Enum.Parse<LocalAtomicDirectoryCheckpoint>(cutName);
+        var cut = Enum.Parse<ProbeLocalAtomicDirectoryCheckpoint>(cutName);
         using var fixture = new Fixture(); var admission = await fixture.PrepareAsync();
         await Assert.ThrowsExactlyAsync<IOException>(() => fixture.RetireAsync(admission,
             (point, _) => point == cut ? ValueTask.FromException(new IOException("Synthetic original transaction interruption.")) : ValueTask.CompletedTask));
@@ -55,7 +55,7 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
         using var fixture = new Fixture(); var admission = await fixture.PrepareAsync(); bool injected = false;
         var error = await Assert.ThrowsExactlyAsync<Win32Exception>(() => fixture.RetireAsync(admission, async (point, token) =>
         {
-            if (point != LocalAtomicDirectoryCheckpoint.AfterFirstChildStaged) return;
+            if (point != ProbeLocalAtomicDirectoryCheckpoint.AfterFirstChildStaged) return;
             await File.WriteAllTextAsync(Path.Combine(fixture.Tree, "unowned.bin"), "unowned new content", token); injected = true;
         }));
         Assert.IsTrue(injected); Assert.IsTrue(error.NativeErrorCode is 145 or 6800 or 6801);
@@ -69,7 +69,7 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
     {
         using var fixture = new Fixture(); var admission = await fixture.PrepareAsync();
         await Assert.ThrowsExactlyAsync<IOException>(() => fixture.RetireAsync(admission,
-            (point, _) => point == LocalAtomicDirectoryCheckpoint.AfterCommit ? ValueTask.FromException(new IOException("Synthetic lost committed return.")) : ValueTask.CompletedTask));
+            (point, _) => point == ProbeLocalAtomicDirectoryCheckpoint.AfterCommit ? ValueTask.FromException(new IOException("Synthetic lost committed return.")) : ValueTask.CompletedTask));
         Assert.IsFalse(Directory.Exists(fixture.Tree)); string original = await File.ReadAllTextAsync(fixture.Receipt(admission));
         var recovered = await fixture.RetireAsync(admission); Assert.HasCount(4, recovered.Effects);
         Assert.AreEqual(original, await File.ReadAllTextAsync(fixture.Receipt(admission)));
@@ -94,17 +94,17 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
             File.WriteAllText(Path.Combine(Tree, "top.bin"), "original top bytes");
             Peer = Path.Combine(source, "peer.bin"); File.WriteAllText(Peer, "unrelated peer"); Paths = new(source);
         }
-        internal Task<LocalAtomicDirectoryAdmission> PrepareAsync(bool fenceParentNamespace = false, bool verifyVolumeHistory = false)
+        internal Task<ProbeLocalAtomicDirectoryAdmission> PrepareAsync(bool fenceParentNamespace = false, bool verifyVolumeHistory = false)
         {
             var operations = OriginalPaths.ToDictionary(path => path, _ => Guid.NewGuid(), StringComparer.Ordinal);
             return ProbeFileOperations.PrepareAtomicDirectoryRetirementAsync(Paths, Guid.NewGuid(), Guid.NewGuid(), "docs", "tree",
                 operations, State, true, CancellationToken.None, fenceParentNamespace, verifyVolumeHistory);
         }
-        internal Task<LocalAtomicDirectoryReceipt> RetireAsync(LocalAtomicDirectoryAdmission admission,
-            Func<LocalAtomicDirectoryCheckpoint, CancellationToken, ValueTask>? checkpoint = null,
-            LocalAtomicDirectoryAuthorization? authorization = null) =>
+        internal Task<ProbeLocalAtomicDirectoryReceipt> RetireAsync(ProbeLocalAtomicDirectoryAdmission admission,
+            Func<ProbeLocalAtomicDirectoryCheckpoint, CancellationToken, ValueTask>? checkpoint = null,
+            ProbeLocalAtomicDirectoryAuthorization? authorization = null) =>
             ProbeFileOperations.RetireAtomicDirectoryAsync(Paths, admission, State, true, checkpoint, CancellationToken.None, authorization);
-        internal string Receipt(LocalAtomicDirectoryAdmission admission) => Path.Combine(State, admission.AdmissionId.ToString("N") + ".committed.json");
+        internal string Receipt(ProbeLocalAtomicDirectoryAdmission admission) => Path.Combine(State, admission.AdmissionId.ToString("N") + ".committed.json");
         internal async Task AssertOriginalsAsync()
         {
             Assert.AreEqual("original leaf bytes", await File.ReadAllTextAsync(Path.Combine(Tree, "nested", "leaf.bin")));

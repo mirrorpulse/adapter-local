@@ -2,7 +2,7 @@
 
 This is the official repository for the MirrorPulse Local Directory Adapter.
 
-The Worker consumes the fixed, hash-verified `MirrorPulse.Adapter.Sdk` 0.3.0
+The Worker consumes the fixed, hash-verified `MirrorPulse.Adapter.Sdk` 0.3.1
 release package. The Host supplies a `sourceDirectory` for each authorized root;
 disabled roots stay offline without probing their source paths. File IDs,
 pagination cursors, range reads, and uploads are scoped by the root key. A single
@@ -13,12 +13,14 @@ The Worker supports listing, stat, range reads, conditional uploads, directory
 creation, same-volume moves, file deletion, and empty-directory deletion. Moves
 never replace existing destinations. Nonempty directories require explicit
 child operations; the Worker does not recursively delete unaccepted children.
-The Worker does not receive a persistent state directory.
+A Host may grant a private persistent state directory separate from the source
+and transfer cache.
 
 The [original directory admission work](docs/original-directory-effects.md)
-adds bounded native tree observations. It does not enable recursive deletion or
-advertise an owned parent-effect capability; the atomic effect and durable replay
-boundary remains under implementation.
+binds a complete set of original Delete operations to a native transaction and
+a durable receipt when the Host selects the atomic directory capabilities.
+It requires a same-volume NTFS source and state grant with available original
+volume history. A later occupant or an unowned child blocks the batch.
 
 ## Conditional mutation and recovery
 
@@ -83,7 +85,7 @@ publication candidates must pass the product's official publisher trust anchor;
 dry runs use an explicitly disposable test key and do not publish a tag or release.
 The package is not rebuilt after signing or approval.
 
-`eng/adapter-sdk.lock.json` pins the original SDK 0.3.0 NuGet package from its
+`eng/adapter-sdk.lock.json` pins the original SDK 0.3.1 NuGet package from its
 GitHub release. `eng/sdk-conformance.lock.json` pins the specification and native
 conformance assets from the same source and verifies their lengths and hashes.
 That SDK runner implements a memory-source profile; the Local profile is built
@@ -96,6 +98,5 @@ records the selected version, source SHA, payload hash, native runtime and trust
 mode so a tested preview cannot be confused with an older stable package.
 
 The [original-directory boundary review](docs/original-directory-effects.md)
-describes bounded read-only admission and the isolated native qualification
-tool. The tool identifies a remaining original-parent history gap; it does not
-enable recursive effects or introduce transactions into the shipping Worker.
+records the isolated native qualification that preceded the negotiated atomic
+deletion path.

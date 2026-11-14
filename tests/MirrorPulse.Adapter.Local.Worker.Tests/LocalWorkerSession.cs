@@ -50,7 +50,6 @@ internal sealed class LocalWorkerSession : IAsyncDisposable
     public string Root { get; }
     public string Cache { get; }
 
-#if LOCAL_ATOMIC_DIRECTORY_CANDIDATE
     internal IReadOnlyList<string> AtomicCapabilities { get; private set; } = [];
 
     internal static async Task<LocalWorkerSession> StartAtomicAsync(string fixture, Guid instance, bool selectCapabilities = true,
@@ -86,7 +85,6 @@ internal sealed class LocalWorkerSession : IAsyncDisposable
         await WriteFrameAsync(AdapterProtocolJson.Encode(request));
         return (request, await ReadAsync());
     }
-#endif
 
     public static async Task<LocalWorkerSession> StartAsync()
     {

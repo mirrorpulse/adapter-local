@@ -4,7 +4,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json;
 using MirrorPulse.Adapter.Sdk;
-using LocalAtomicDirectoryCheckpoint = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryCheckpoint;
+using ProbeLocalAtomicDirectoryCheckpoint = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryCheckpoint;
 
 namespace MirrorPulse.Adapter.Local.Worker.Tests;
 
@@ -38,8 +38,8 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
     }
 
     [TestMethod]
-    [DataRow(nameof(LocalAtomicDirectoryCheckpoint.AfterOriginalsLocked))]
-    [DataRow(nameof(LocalAtomicDirectoryCheckpoint.AfterReceiptStaged))]
+    [DataRow(nameof(ProbeLocalAtomicDirectoryCheckpoint.AfterOriginalsLocked))]
+    [DataRow(nameof(ProbeLocalAtomicDirectoryCheckpoint.AfterReceiptStaged))]
     public async Task VolumeHistoryFenceExcludesIndependentSiblingsThroughCommitAndReplaysTheSameReceipt(string checkpoint)
     {
         using var fixture = new Fixture();
@@ -76,8 +76,8 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
     }
 
     [TestMethod]
-    [DataRow(nameof(LocalAtomicDirectoryCheckpoint.AfterOriginalsLocked))]
-    [DataRow(nameof(LocalAtomicDirectoryCheckpoint.AfterReceiptStaged))]
+    [DataRow(nameof(ProbeLocalAtomicDirectoryCheckpoint.AfterOriginalsLocked))]
+    [DataRow(nameof(ProbeLocalAtomicDirectoryCheckpoint.AfterReceiptStaged))]
     public async Task VolumeHistoryRetainsTheOriginalRangeAfterWorkerProcessDeathBeforeCommit(string checkpoint)
     {
         using var fixture = new Fixture();
@@ -110,7 +110,7 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
         {
             var receipt = await fixture.RetireAsync(admission, (point, _) =>
             {
-                if (point != LocalAtomicDirectoryCheckpoint.AfterOriginalsLocked) return ValueTask.CompletedTask;
+                if (point != ProbeLocalAtomicDirectoryCheckpoint.AfterOriginalsLocked) return ValueTask.CompletedTask;
                 attempted = true;
                 bool wrote = MetadataWriter.SetFileTime(writer, IntPtr.Zero, IntPtr.Zero, in contender);
                 int nativeError = Marshal.GetLastPInvokeError();

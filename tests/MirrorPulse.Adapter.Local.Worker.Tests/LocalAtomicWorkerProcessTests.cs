@@ -1,4 +1,3 @@
-#if LOCAL_ATOMIC_DIRECTORY_CANDIDATE
 using MirrorPulse.Adapter.Sdk;
 
 namespace MirrorPulse.Adapter.Local.Worker.Tests;
@@ -186,4 +185,3 @@ public sealed class LocalAtomicWorkerProcessTests
         }
     }
 }
-#endif

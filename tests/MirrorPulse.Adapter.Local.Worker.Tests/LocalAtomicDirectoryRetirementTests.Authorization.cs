@@ -1,9 +1,9 @@
 extern alias Probe;
 using System.Text.Json;
 using MirrorPulse.Adapter.Sdk;
-using LocalAtomicDirectoryAdmission = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryAdmission;
-using LocalAtomicDirectoryAuthorization = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryAuthorization;
-using LocalAtomicDirectoryCheckpoint = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryCheckpoint;
+using ProbeLocalAtomicDirectoryAdmission = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryAdmission;
+using ProbeLocalAtomicDirectoryAuthorization = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryAuthorization;
+using ProbeLocalAtomicDirectoryCheckpoint = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryCheckpoint;
 
 namespace MirrorPulse.Adapter.Local.Worker.Tests;
 
@@ -29,10 +29,10 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
     }
 
     [TestMethod]
-    [DataRow(nameof(LocalAtomicDirectoryCheckpoint.AfterOriginalsLocked))]
-    [DataRow(nameof(LocalAtomicDirectoryCheckpoint.AfterFirstChildStaged))]
-    [DataRow(nameof(LocalAtomicDirectoryCheckpoint.AfterParentStaged))]
-    [DataRow(nameof(LocalAtomicDirectoryCheckpoint.AfterReceiptStaged))]
+    [DataRow(nameof(ProbeLocalAtomicDirectoryCheckpoint.AfterOriginalsLocked))]
+    [DataRow(nameof(ProbeLocalAtomicDirectoryCheckpoint.AfterFirstChildStaged))]
+    [DataRow(nameof(ProbeLocalAtomicDirectoryCheckpoint.AfterParentStaged))]
+    [DataRow(nameof(ProbeLocalAtomicDirectoryCheckpoint.AfterReceiptStaged))]
     public async Task AuthorizedInterruptionRetainsOriginalBytesAndReservesTheSameManifest(string cut)
     {
         using var fixture = new Fixture();
@@ -43,7 +43,7 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
             authorization));
         await fixture.AssertOriginalsAsync();
         Assert.IsFalse(File.Exists(fixture.Receipt(admission)));
-        var retained = AdapterProtocolJson.Decode<LocalAtomicDirectoryAuthorization>(await File.ReadAllBytesAsync(AuthorizationPath(fixture, admission)));
+        var retained = AdapterProtocolJson.Decode<ProbeLocalAtomicDirectoryAuthorization>(await File.ReadAllBytesAsync(AuthorizationPath(fixture, admission)));
         Assert.AreEqual(authorization, retained);
         var rebound = authorization with { ManifestFingerprint = new string('D', 64) };
         rebound = rebound with { RequestFingerprint = rebound.CalculateFingerprint() };
@@ -64,7 +64,7 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
         var admission = await fixture.PrepareAsync(verifyVolumeHistory: true);
         var authorization = Authorize(admission);
         await Assert.ThrowsExactlyAsync<IOException>(() => fixture.RetireAsync(admission, (point, _) =>
-            point == LocalAtomicDirectoryCheckpoint.AfterCommit ? ValueTask.FromException(new IOException("Synthetic lost reply.")) : ValueTask.CompletedTask,
+            point == ProbeLocalAtomicDirectoryCheckpoint.AfterCommit ? ValueTask.FromException(new IOException("Synthetic lost reply.")) : ValueTask.CompletedTask,
             authorization));
         byte[] originalReceipt = await File.ReadAllBytesAsync(fixture.Receipt(admission));
         Directory.CreateDirectory(fixture.Tree);
@@ -89,9 +89,9 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
         // Reserve once without committing source effects, then kill a separate
         // process during the actual native transaction (managed finally is bypassed).
         await Assert.ThrowsExactlyAsync<IOException>(() => fixture.RetireAsync(admission, (point, _) =>
-            point == LocalAtomicDirectoryCheckpoint.AfterOriginalsLocked ? ValueTask.FromException(new IOException("Reserve authorization.")) : ValueTask.CompletedTask,
+            point == ProbeLocalAtomicDirectoryCheckpoint.AfterOriginalsLocked ? ValueTask.FromException(new IOException("Reserve authorization.")) : ValueTask.CompletedTask,
             authorization));
-        var stopped = await RunProbeAsync("--retire-authorized", fixture, admission, nameof(LocalAtomicDirectoryCheckpoint.AfterReceiptStaged));
+        var stopped = await RunProbeAsync("--retire-authorized", fixture, admission, nameof(ProbeLocalAtomicDirectoryCheckpoint.AfterReceiptStaged));
         Assert.AreEqual(73, stopped.ExitCode, stopped.Output);
         await fixture.AssertOriginalsAsync();
         Assert.IsFalse(File.Exists(fixture.Receipt(admission)));
@@ -104,8 +104,8 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
     }
 
     [TestMethod]
-    [DataRow(nameof(LocalAtomicDirectoryCheckpoint.AfterAuthorizationStaged), false)]
-    [DataRow(nameof(LocalAtomicDirectoryCheckpoint.AfterAuthorizationCommitted), true)]
+    [DataRow(nameof(ProbeLocalAtomicDirectoryCheckpoint.AfterAuthorizationStaged), false)]
+    [DataRow(nameof(ProbeLocalAtomicDirectoryCheckpoint.AfterAuthorizationCommitted), true)]
     public async Task AuthorizedReservationHasAnAtomicCrashBoundaryBeforeSourceEffects(string cut, bool reservationCommitted)
     {
         using var fixture = new Fixture();
@@ -133,7 +133,7 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
         var admission = await fixture.PrepareAsync(verifyVolumeHistory: true);
         var authorization = Authorize(admission);
         await Assert.ThrowsExactlyAsync<IOException>(() => fixture.RetireAsync(admission, (point, _) =>
-            point == LocalAtomicDirectoryCheckpoint.AfterAuthorizationCommitted ? ValueTask.FromException(new IOException("Reserve only.")) : ValueTask.CompletedTask,
+            point == ProbeLocalAtomicDirectoryCheckpoint.AfterAuthorizationCommitted ? ValueTask.FromException(new IOException("Reserve only.")) : ValueTask.CompletedTask,
             authorization));
         var operations = admission.Entries.ToDictionary(entry => entry.Original.Path, entry => entry.OperationId, StringComparer.Ordinal);
         var other = await Probe::MirrorPulse.Adapter.Local.Worker.LocalFileOperations.PrepareAtomicDirectoryRetirementAsync(fixture.Paths,
@@ -154,7 +154,7 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
         var admission = await fixture.PrepareAsync(verifyVolumeHistory: true);
         var authorization = Authorize(admission);
         await Assert.ThrowsExactlyAsync<IOException>(() => fixture.RetireAsync(admission, (point, _) =>
-            point == LocalAtomicDirectoryCheckpoint.AfterAuthorizationCommitted ? ValueTask.FromException(new IOException("Reserve only.")) : ValueTask.CompletedTask,
+            point == ProbeLocalAtomicDirectoryCheckpoint.AfterAuthorizationCommitted ? ValueTask.FromException(new IOException("Reserve only.")) : ValueTask.CompletedTask,
             authorization));
         File.Delete(Path.Combine(fixture.State, "operation-" + admission.Entries[0].OperationId.ToString("N") + ".claim.json"));
         await Assert.ThrowsExactlyAsync<InvalidDataException>(() => fixture.RetireAsync(admission, authorization: authorization));
@@ -176,13 +176,13 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
         Assert.AreEqual("successor remains", await File.ReadAllTextAsync(Path.Combine(fixture.Tree, "successor.bin")));
     }
 
-    private static LocalAtomicDirectoryAuthorization Authorize(LocalAtomicDirectoryAdmission admission)
+    private static ProbeLocalAtomicDirectoryAuthorization Authorize(ProbeLocalAtomicDirectoryAdmission admission)
     {
-        var authorization = new LocalAtomicDirectoryAuthorization(admission.InstanceId, admission.AdmissionId, admission.Fingerprint,
+        var authorization = new ProbeLocalAtomicDirectoryAuthorization(admission.InstanceId, admission.AdmissionId, admission.Fingerprint,
             new string('B', 64), "");
         return authorization with { RequestFingerprint = authorization.CalculateFingerprint() };
     }
 
-    private static string AuthorizationPath(Fixture fixture, LocalAtomicDirectoryAdmission admission) =>
+    private static string AuthorizationPath(Fixture fixture, ProbeLocalAtomicDirectoryAdmission admission) =>
         Path.Combine(fixture.State, admission.AdmissionId.ToString("N") + ".authorization.json");
 }

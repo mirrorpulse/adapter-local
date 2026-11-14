@@ -2,7 +2,7 @@ extern alias Probe;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
-using LocalAtomicDirectoryCheckpoint = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryCheckpoint;
+using ProbeLocalAtomicDirectoryCheckpoint = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryCheckpoint;
 
 namespace MirrorPulse.Adapter.Local.Worker.Tests;
 
@@ -58,7 +58,7 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
         {
             var receipt = await fixture.RetireAsync(admission, (point, _) =>
             {
-                if (point == LocalAtomicDirectoryCheckpoint.AfterOriginalsLocked)
+                if (point == ProbeLocalAtomicDirectoryCheckpoint.AfterOriginalsLocked)
                 {
                     attempted = true;
                     wrote = MetadataWriter.SetFileTime(writer, IntPtr.Zero, IntPtr.Zero, in contenderTime);
