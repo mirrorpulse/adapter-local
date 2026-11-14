@@ -9,6 +9,15 @@ namespace MirrorPulse.Adapter.Local.Worker;
 /// <summary>NTFS transaction primitives for a container rename and isolated recursive effect qualification.</summary>
 internal static class AtomicDirectoryNative
 {
+    internal const string FailureCallKey = "MirrorPulse.AtomicDirectory.NativeCall";
+
+    internal static Win32Exception LastFailure(string nativeCall)
+    {
+        var failure = new Win32Exception(Marshal.GetLastPInvokeError());
+        failure.Data[FailureCallKey] = nativeCall;
+        return failure;
+    }
+
     internal sealed class Item : IDisposable
     {
         private readonly FileStream? _stream;
@@ -41,19 +50,19 @@ internal static class AtomicDirectoryNative
     {
         var handle = CreateTransaction(IntPtr.Zero, IntPtr.Zero, 0, 0, 0, 30000, "MirrorPulse original directory batch");
         if (!handle.IsInvalid) return handle;
-        int error = Marshal.GetLastPInvokeError(); handle.Dispose(); throw new Win32Exception(error);
+        var failure = LastFailure("CreateTransaction"); handle.Dispose(); throw failure;
     }
     internal static Item Open(string path, SafeFileHandle transaction)
     {
         var handle = CreateFileTransactedW(path, 0xC0010000, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero, transaction, IntPtr.Zero, IntPtr.Zero);
         if (!handle.IsInvalid) return new(handle);
-        int error = Marshal.GetLastPInvokeError(); handle.Dispose(); throw new Win32Exception(error);
+        var failure = LastFailure("OpenTransacted"); handle.Dispose(); throw failure;
     }
     internal static long ReadFileUsn(SafeFileHandle handle)
     {
         byte[] buffer = new byte[4096];
         if (!DeviceIoControl(handle, 0x900eb, [2, 0, 3, 0], 4, buffer, buffer.Length, out int returned, IntPtr.Zero))
-            throw new Win32Exception(Marshal.GetLastPInvokeError());
+            throw LastFailure("ReadFileUsn");
         ushort version = BitConverter.ToUInt16(buffer, 4);
         if (version is not (2 or 3) || returned < (version == 2 ? 60 : 76) || BitConverter.ToUInt32(buffer, 0) > returned)
             throw new NotSupportedException("OriginalFileJournalRecordUnsupported");
@@ -62,18 +71,18 @@ internal static class AtomicDirectoryNative
     internal static long ReadChangeTime(SafeFileHandle handle)
     {
         if (!GetFileInformationByHandleEx(handle, 0, out FileBasicInformation information, 40))
-            throw new Win32Exception(Marshal.GetLastPInvokeError());
+            throw LastFailure("ReadChangeTime");
         return information.ChangeTime;
     }
     internal static Guid Id(SafeFileHandle transaction)
     {
-        if (!GetTransactionId(transaction, out Guid id)) throw new Win32Exception(Marshal.GetLastPInvokeError());
+        if (!GetTransactionId(transaction, out Guid id)) throw LastFailure("ReadTransactionId");
         return id;
     }
     internal static void Remove(string path, bool directory, SafeFileHandle transaction)
     {
         bool removed = directory ? RemoveDirectoryTransactedW(path, transaction) : DeleteFileTransactedW(path, transaction);
-        if (!removed) throw new Win32Exception(Marshal.GetLastPInvokeError());
+        if (!removed) throw LastFailure(directory ? "RemoveDirectory" : "RemoveFile");
     }
     internal static void FenceNamespace(string source, string temporary, SafeFileHandle transaction)
     {
@@ -83,22 +92,31 @@ internal static class AtomicDirectoryNative
     /// <summary>Stages a same-volume rename without replacing the destination; supplies no admission proof.</summary>
     internal static void Move(string source, string destination, SafeFileHandle transaction)
     {
-        if (!MoveFileTransactedW(source, destination, IntPtr.Zero, IntPtr.Zero, 0, transaction))
-            throw new Win32Exception(Marshal.GetLastPInvokeError());
+        if (!MoveFileTransactedW(ExtendTransactionPath(source), ExtendTransactionPath(destination),
+            IntPtr.Zero, IntPtr.Zero, 0, transaction))
+            throw LastFailure("MoveTransacted");
     }
+
+    // Namespace fences append an original operation ID even when the source fits MAX_PATH.
+    // Pass the extended path directly for a canonical local drive path that exceeds Win32's default.
+    private static string ExtendTransactionPath(string path) =>
+        path.Length >= 260 && char.IsAsciiLetter(path[0]) && path[1] == ':' && path[2] == '\\'
+            ? @"\\?\" + path
+            : path;
+
     internal static void WriteReceipt(string path, byte[] payload, SafeFileHandle transaction)
     {
         using var handle = CreateFileTransactedW(path, 0x40000000, 0, IntPtr.Zero, 1, 0x00200000, IntPtr.Zero, transaction, IntPtr.Zero, IntPtr.Zero);
-        if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastPInvokeError());
+        if (handle.IsInvalid) throw LastFailure("OpenReceipt");
         using var stream = new FileStream(handle, FileAccess.Write); stream.Write(payload); stream.Flush(true);
     }
     internal static void Commit(SafeFileHandle transaction)
     {
-        if (!CommitTransaction(transaction)) throw new Win32Exception(Marshal.GetLastPInvokeError());
+        if (!CommitTransaction(transaction)) throw LastFailure("CommitTransaction");
     }
     private static FileInformation Information(SafeFileHandle handle)
     {
-        if (!GetFileInformationByHandle(handle, out var information)) throw new Win32Exception(Marshal.GetLastPInvokeError());
+        if (!GetFileInformationByHandle(handle, out var information)) throw LastFailure("ReadTransactedMetadata");
         return information;
     }
     [StructLayout(LayoutKind.Sequential)]
