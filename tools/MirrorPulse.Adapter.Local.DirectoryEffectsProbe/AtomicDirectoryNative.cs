@@ -92,9 +92,18 @@ internal static class AtomicDirectoryNative
     /// <summary>Stages a same-volume rename without replacing the destination; supplies no admission proof.</summary>
     internal static void Move(string source, string destination, SafeFileHandle transaction)
     {
-        if (!MoveFileTransactedW(source, destination, IntPtr.Zero, IntPtr.Zero, 0, transaction))
+        if (!MoveFileTransactedW(ExtendTransactionPath(source), ExtendTransactionPath(destination),
+            IntPtr.Zero, IntPtr.Zero, 0, transaction))
             throw LastFailure("MoveTransacted");
     }
+
+    // Namespace fences append an original operation ID even when the source fits MAX_PATH.
+    // Pass the extended path directly for a canonical local drive path that exceeds Win32's default.
+    private static string ExtendTransactionPath(string path) =>
+        path.Length >= 260 && char.IsAsciiLetter(path[0]) && path[1] == ':' && path[2] == '\\'
+            ? @"\\?\" + path
+            : path;
+
     internal static void WriteReceipt(string path, byte[] payload, SafeFileHandle transaction)
     {
         using var handle = CreateFileTransactedW(path, 0x40000000, 0, IntPtr.Zero, 1, 0x00200000, IntPtr.Zero, transaction, IntPtr.Zero, IntPtr.Zero);

@@ -14,10 +14,15 @@ if ($PSCmdlet.ParameterSetName -eq 'Child') {
             throw 'Require the designated ordinary test account.'
         }
     } finally { $caller.Dispose() }
+    $results = Join-Path $Payload 'work'
+    $env:TEMP = $results
+    $env:TMP = $results
+    $env:DOTNET_CLI_HOME = $results
     $env:MP_LOCAL_TEST_WORKER_EXE = Join-Path $Payload 'worker/MirrorPulse.Adapter.Worker.exe'
     $assembly = Join-Path $Payload 'tests/MirrorPulse.Adapter.Local.Worker.Tests.dll'
-    $testArgs = @('test', $assembly, '--filter', 'FullyQualifiedName~AtomicWorkerCommitsExactAdmittedOriginalsAndReplaysAfterProcessRestart',
-        '--results-directory', $env:TEMP, '--logger', 'trx;LogFileName=ordinary-user.trx', '--logger', 'console;verbosity=minimal')
+    [IO.File]::WriteAllText((Join-Path $results 'ordinary-user.started'), 'verified')
+    $testArgs = @('vstest', $assembly, '/TestCaseFilter:FullyQualifiedName~AtomicWorkerCommitsExactAdmittedOriginalsAndReplaysAfterProcessRestart',
+        "/ResultsDirectory:$results", '/Logger:trx;LogFileName=ordinary-user.trx', '/Logger:console;verbosity=minimal')
     & $Dotnet @testArgs
     exit $LASTEXITCODE
 }
@@ -90,22 +95,29 @@ try {
     $arguments = @('-NoProfile', '-NonInteractive', '-File', ('"' + $script + '"'), '-Payload', ('"' + $scratch + '"'),
         '-ExpectedSid', $user.SID.Value, '-Dotnet', ('"' + $dotnetPath + '"'))
     $launch = @{FilePath=$pwshPath;Credential=$credential;LoadUserProfile=$true;WindowStyle='Hidden';PassThru=$true;
-        WorkingDirectory=$scratch;ArgumentList=$arguments;Environment=$childEnvironment;
+        WorkingDirectory=$env:SystemRoot;ArgumentList=$arguments;Environment=$childEnvironment;
         RedirectStandardOutput=(Join-Path $scratch 'stdout.log');RedirectStandardError=(Join-Path $scratch 'stderr.log')}
     $process = Start-Process @launch
     if (-not $process.WaitForExit(90000)) { throw 'The ordinary-user atomic Delete fixture exceeded its Worker test budget.' }
+    $process.WaitForExit()
     New-Item -ItemType Directory -Path $output -Force | Out-Null
     $trx = Join-Path $work 'ordinary-user.trx'
     if (Test-Path -LiteralPath $trx -PathType Leaf) {
         Copy-Item -LiteralPath $trx -Destination (Join-Path $output 'ordinary-user.trx')
         [xml]$report = Get-Content -LiteralPath $trx -Raw
         $result = @($report.TestRun.Results.UnitTestResult)
-        if ($result.Count -eq 1 -and $result[0].outcome -ne 'Passed') { Write-Host $result[0].Output.ErrorInfo.Message }
+        foreach ($failure in $result | Where-Object outcome -ne 'Passed') {
+            $message = [string]$failure.Output.ErrorInfo.Message
+            if ($message -match 'Atomic Delete failed: code=[A-Za-z0-9]+, call=[A-Za-z0-9]*, nativeError=[0-9]*\.') {
+                Write-Host $Matches[0]
+            }
+        }
     } else {
-        Write-Host "Ordinary-user test exit code: $($process.ExitCode)."
+        $started = Test-Path -LiteralPath (Join-Path $work 'ordinary-user.started') -PathType Leaf
+        Write-Host "Ordinary-user test started: $started; exit code: $($process.ExitCode)."
         throw 'The ordinary-user fixture produced no test result.'
     }
-    if ($process.ExitCode -ne 0 -or $result.Count -ne 1 -or $result[0].outcome -cne 'Passed') {
+    if ($process.ExitCode -ne 0 -or $result.Count -ne 2 -or @($result | Where-Object outcome -ne 'Passed').Count -ne 0) {
         throw 'The actual Local Worker could not complete its original Delete under the ordinary test user.'
     }
 } finally {
@@ -120,6 +132,14 @@ try {
             [IO.Path]::GetFileName($resolved) -cne $name -or (Get-Item -LiteralPath $resolved).Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) {
             throw 'The disposable Local fixture escaped its designated parent.'
         }
-        Remove-Item -LiteralPath $resolved -Recurse -Force
+        for ($attempt = 1; $attempt -le 5; $attempt++) {
+            try {
+                Remove-Item -LiteralPath $resolved -Recurse -Force
+                break
+            } catch [IO.IOException] {
+                if ($attempt -eq 5) { throw }
+                Start-Sleep -Milliseconds (200 * $attempt)
+            }
+        }
     }
 }

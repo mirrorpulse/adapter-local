@@ -53,7 +53,7 @@ internal sealed class LocalWorkerSession : IAsyncDisposable
     internal IReadOnlyList<string> AtomicCapabilities { get; private set; } = [];
 
     internal static async Task<LocalWorkerSession> StartAtomicAsync(string fixture, Guid instance, bool selectCapabilities = true,
-        bool enabled = true, bool provideGrant = true)
+        bool enabled = true, bool provideGrant = true, string? sourceDirectory = null)
     {
         var session = new LocalWorkerSession(fixture, instance, provideGrant ? Path.Combine(fixture, "state") : null);
         try
@@ -69,7 +69,7 @@ internal sealed class LocalWorkerSession : IAsyncDisposable
                 ? [.. AdapterHandshake.V2Capabilities, AdapterOriginalDirectoryWire.Capability, AdapterAtomicDirectoryDeletionWire.Capability]
                 : AdapterHandshake.V2Capabilities;
             AdapterRootBinding[] roots = [new("docs", enabled,
-                new Dictionary<string, string> { ["sourceDirectory"] = Path.Combine(fixture, "source") })];
+                new Dictionary<string, string> { ["sourceDirectory"] = sourceDirectory ?? Path.Combine(fixture, "source") })];
             await session.SendAsync("Ready", hello.RequestId,
                 new AdapterReady(2, session.AtomicCapabilities, roots, new Dictionary<string, string>()), response: true);
             session._protocol = 2;
