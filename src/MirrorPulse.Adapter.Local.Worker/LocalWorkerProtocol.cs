@@ -106,7 +106,7 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
         catch (System.ComponentModel.Win32Exception error)
         {
             throw new InvalidDataException(error.NativeErrorCode is 5 ? "AccessDenied" :
-                error.NativeErrorCode is 32 or 33 or 6800 or 6801 ? "RemoteConflict" : "AtomicDirectoryNativeFailure");
+                error.NativeErrorCode is 32 or 33 or 6800 or 6801 ? "RemoteConflict" : "AtomicDirectoryNativeFailure", error);
         }
         await ReplyAsync(command, response.MessageType, response.Payload, token).ConfigureAwait(false);
     }
@@ -339,9 +339,13 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
             _ => "InvalidRequest"
         };
         JsonElement payload = command.Payload;
+        var nativeDirectoryFailure = command.MessageType is AdapterOriginalDirectoryWire.AdmissionRequestMessage or AdapterAtomicDirectoryDeletionWire.RequestMessage
+            ? exception.InnerException as System.ComponentModel.Win32Exception : null;
         return ReplyAsync(command, "OperationError", new
         {
             code,
+            nativeErrorCode = nativeDirectoryFailure?.NativeErrorCode,
+            nativeDirectoryCall = nativeDirectoryFailure?.Data[AtomicDirectoryNative.FailureCallKey] as string,
             recoveryRelativePath = (exception as LocalRecoveryRequiredException)?.RecoveryRelativePath,
             rootKey = payload.TryGetProperty("rootKey", out JsonElement root) && root.ValueKind == JsonValueKind.String ? root.GetString() : null,
             operationId = payload.TryGetProperty("operationId", out JsonElement operation) && operation.ValueKind == JsonValueKind.String && operation.TryGetGuid(out Guid id) ? (Guid?)id : null

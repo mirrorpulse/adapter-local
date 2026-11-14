@@ -57,6 +57,12 @@ public sealed class LocalAtomicWorkerProcessTests
             AssertError(refused.Response, "LocalOriginalDirectoryAdmissionChanged");
             fixture.RequireOriginals();
             var exchange = await worker.ExchangeAtomicAsync(AdapterAtomicDirectoryDeletionWire.RequestMessage, request);
+            if (exchange.Response.MessageType == "OperationError")
+            {
+                var failure = exchange.Response.Payload;
+                Assert.Fail($"Atomic Delete failed: code={failure.GetProperty("code").GetString()}, " +
+                    $"call={failure.GetProperty("nativeDirectoryCall")}, nativeError={failure.GetProperty("nativeErrorCode")}.");
+            }
             original = AdapterAtomicDirectoryDeletionWire.ReadResponse(exchange.Request, exchange.Response, worker.AtomicCapabilities);
             Assert.HasCount(3, original.DeletedOriginals);
             Assert.IsFalse(Directory.Exists(fixture.Tree));

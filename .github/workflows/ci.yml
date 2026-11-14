@@ -25,12 +25,16 @@ jobs:
         run: pwsh ./eng/verify.ps1
       - name: Verify release input and dual-RID packaging without production keys
         run: pwsh -NoProfile -File eng/verify-release.ps1
+      - name: Verify original atomic Delete as a fresh Windows user
+        shell: pwsh
+        run: ./eng/verify-atomic-delete-nonadmin.ps1
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         if: always()
         with:
           name: local-process-${{ matrix.runner }}
           path: |
             artifacts/test-results/*.trx
+            artifacts/test-results/atomic-delete-nonadmin/*.trx
             artifacts/release/**/native-conformance.json
           if-no-files-found: error
           retention-days: 365
