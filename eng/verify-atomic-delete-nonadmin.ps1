@@ -32,7 +32,7 @@ $scratch = Join-Path $base $name
 $work = Join-Path $scratch 'work'
 $output = Join-Path $repo 'artifacts/test-results/atomic-delete-nonadmin'
 $dotnetPath = (Get-Command dotnet -CommandType Application).Source
-$pwshPath = (Get-Command pwsh -CommandType Application).Source
+$pwshPath = [Environment]::ProcessPath
 $architecture = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
 $runtime = switch ($architecture) { 'X64' { 'win-x64' } 'Arm64' { 'win-arm64' } default { throw 'Unexpected test architecture.' } }
 $release = Join-Path $repo 'artifacts/release'
@@ -40,7 +40,7 @@ $tests = Join-Path $repo 'tests/MirrorPulse.Adapter.Local.Worker.Tests/bin/Relea
 $user = $null
 $process = $null
 $ownedWorkspace = $false
-if ($base.Length -eq 0 -or (Get-Item -LiteralPath $base).Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) {
+if ($base.Length -eq 0 -or (Get-Item -LiteralPath $base -Force).Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) {
     throw 'Require an ordinary disposable workspace parent.'
 }
 try {
