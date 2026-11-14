@@ -86,6 +86,31 @@ internal sealed class LocalWorkerSession : IAsyncDisposable
         return (request, await ReadAsync());
     }
 
+    internal static async Task<LocalWorkerSession> StartWithStateAsync(string fixture, Guid instance, string? stateOverride = null,
+        bool selectDurableMove = true)
+    {
+        string source = Path.Combine(fixture, "source");
+        string state = stateOverride ?? Path.Combine(fixture, "state");
+        Directory.CreateDirectory(source); Directory.CreateDirectory(state);
+        var session = new LocalWorkerSession(fixture, instance, state);
+        try
+        {
+            await session._pipe.WaitForConnectionAsync(session._deadline.Token);
+            var hello = await session.ReadAsync();
+            Assert.AreEqual("Hello", hello.MessageType);
+            string capability = LocalWorkerProgram.DurableDirectoryMoveCapability;
+            CollectionAssert.Contains(AdapterHandshake.ReadHello(hello.Payload).Capabilities.ToArray(), capability);
+            IReadOnlyList<string> capabilities = selectDurableMove ? [.. AdapterHandshake.V2Capabilities, capability] : AdapterHandshake.V2Capabilities;
+            AdapterRootBinding[] roots = [new("docs", true, new Dictionary<string, string> { ["sourceDirectory"] = source })];
+            await session.SendAsync("Ready", hello.RequestId,
+                new AdapterReady(2, capabilities, roots, new Dictionary<string, string>()), response: true);
+            session._protocol = 2;
+            Assert.AreEqual("Connected", (await session.ReadAsync()).MessageType);
+            return session;
+        }
+        catch { await session.DisposeAsync(); throw; }
+    }
+
     public static async Task<LocalWorkerSession> StartAsync()
     {
         string root = Path.Combine(Path.GetTempPath(), "mp-local-v2-" + Guid.NewGuid().ToString("N"));
