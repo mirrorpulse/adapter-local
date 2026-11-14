@@ -38,12 +38,14 @@ public sealed class LocalAtomicWorkerProcessTests
     }
 
     [TestMethod]
-    public async Task AtomicWorkerCommitsExactAdmittedOriginalsAndReplaysAfterProcessRestart()
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task AtomicWorkerCommitsExactAdmittedOriginalsAndReplaysAfterProcessRestart(bool deepBackend)
     {
-        using var fixture = new Fixture();
+        using var fixture = new Fixture(deepBackend);
         AdapterAtomicDirectoryDeletionRequest request;
         AdapterAtomicDirectoryDeletionReceipt original;
-        await using (var worker = await LocalWorkerSession.StartAtomicAsync(fixture.Root, fixture.Instance))
+        await using (var worker = await LocalWorkerSession.StartAtomicAsync(fixture.Root, fixture.Instance, sourceDirectory: fixture.Source))
         {
             var admitted = await AdmitAsync(worker, await fixture.ReadRequestAsync(worker));
             request = DeleteRequest(admitted.Request, admitted.Admission, 'A');
@@ -57,6 +59,13 @@ public sealed class LocalAtomicWorkerProcessTests
             AssertError(refused.Response, "LocalOriginalDirectoryAdmissionChanged");
             fixture.RequireOriginals();
             var exchange = await worker.ExchangeAtomicAsync(AdapterAtomicDirectoryDeletionWire.RequestMessage, request);
+            if (exchange.Response.MessageType == "OperationError")
+            {
+                var failure = exchange.Response.Payload;
+                failure.TryGetProperty("nativeDirectoryCall", out var call);
+                failure.TryGetProperty("nativeErrorCode", out var error);
+                Assert.Fail($"Atomic Delete failed: code={failure.GetProperty("code").GetString()}, call={call}, nativeError={error}.");
+            }
             original = AdapterAtomicDirectoryDeletionWire.ReadResponse(exchange.Request, exchange.Response, worker.AtomicCapabilities);
             Assert.HasCount(3, original.DeletedOriginals);
             Assert.IsFalse(Directory.Exists(fixture.Tree));
@@ -64,7 +73,7 @@ public sealed class LocalAtomicWorkerProcessTests
         Directory.CreateDirectory(fixture.Tree);
         string successor = Path.Combine(fixture.Tree, "successor.bin");
         await File.WriteAllTextAsync(successor, "later bytes");
-        await using (var worker = await LocalWorkerSession.StartAtomicAsync(fixture.Root, fixture.Instance))
+        await using (var worker = await LocalWorkerSession.StartAtomicAsync(fixture.Root, fixture.Instance, sourceDirectory: fixture.Source))
         {
             var admitted = await AdmitAsync(worker, request.OriginalRequest);
             Assert.AreEqual(request.Admission.AdmissionFingerprint, admitted.Admission.AdmissionFingerprint);
@@ -166,12 +175,22 @@ public sealed class LocalAtomicWorkerProcessTests
     {
         internal string Root { get; } = Path.Combine(Path.GetTempPath(), "mp-local-atomic-" + Guid.NewGuid().ToString("N"));
         internal Guid Instance { get; } = Guid.NewGuid();
-        internal string Source => Path.Combine(Root, "source");
+        internal string Source { get; }
         internal string State => Path.Combine(Root, "state");
         internal string Tree => Path.Combine(Source, "tree");
 
-        internal Fixture()
+        internal Fixture(bool deepBackend = false)
         {
+            // Keep the original objects below MAX_PATH while the temporary transaction
+            // name reaches past it, as in the signed Host's nested storage workspace.
+            Source = deepBackend
+                ? Path.Combine(Root, "data", new string('a', Math.Max(16, 213 - Root.Length)), "source")
+                : Path.Combine(Root, "source");
+            if (deepBackend)
+            {
+                Assert.IsLessThan(260, Path.Combine(Source, "tree", "first.txt").Length);
+                Assert.IsGreaterThanOrEqualTo(260, Path.Combine(Source, ".mp-atomic-stage-" + new string('0', 32)).Length);
+            }
             Directory.CreateDirectory(Tree);
             Directory.CreateDirectory(State);
             File.WriteAllText(Path.Combine(Root, ".mp-atomic-test-fixture"), Path.GetFileName(Root));

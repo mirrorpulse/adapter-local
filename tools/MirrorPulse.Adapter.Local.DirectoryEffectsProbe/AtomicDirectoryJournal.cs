@@ -1,5 +1,4 @@
 using System.Buffers.Binary;
-using System.ComponentModel;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
@@ -31,7 +30,7 @@ internal sealed class AtomicDirectoryJournal : IDisposable
         var name = new char[128];
         if (!GetVolumePathNameW(fixturePath, mount, mount.Length) ||
             !GetVolumeNameForVolumeMountPointW(ReadVolumePath(mount), name, name.Length))
-            throw new Win32Exception(Marshal.GetLastPInvokeError());
+            throw AtomicDirectoryNative.LastFailure("ResolveJournalVolume");
         string volume = ReadVolumePath(name);
         if (!volume.StartsWith(VolumePrefix, StringComparison.OrdinalIgnoreCase) || !volume.EndsWith('\\') ||
             !Guid.TryParseExact(volume.AsSpan(VolumePrefix.Length, volume.Length - VolumePrefix.Length - 1), "B", out var id) ||
@@ -41,9 +40,9 @@ internal sealed class AtomicDirectoryJournal : IDisposable
         // The unprivileged control expects an ordinary directory handle to the volume GUID root.
         var handle = CreateFileW(volume, 0x80000000, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero);
         if (!handle.IsInvalid) return new(handle, id);
-        int error = Marshal.GetLastPInvokeError();
+        var failure = AtomicDirectoryNative.LastFailure("OpenJournalRoot");
         handle.Dispose();
-        throw new Win32Exception(error);
+        throw failure;
     }
 
     private static string ReadVolumePath(char[] buffer)
@@ -79,7 +78,7 @@ internal sealed class AtomicDirectoryJournal : IDisposable
             BinaryPrimitives.WriteInt64LittleEndian(request, cursor);
             if (!DeviceIoControl(_handle, ReadUnprivilegedUsnJournal, request, request.Length, page, page.Length,
                 out int returned, IntPtr.Zero))
-                throw new Win32Exception(Marshal.GetLastPInvokeError());
+                throw AtomicDirectoryNative.LastFailure("ReadUnprivilegedJournal");
             if (returned < 0 || returned > page.Length) throw new InvalidDataException("AtomicDirectoryJournalRecordInvalid");
             cursor = RequireUnchangedPage(page.AsSpan(0, returned), cursor, bounds.Next, objects, parents);
         }
@@ -135,7 +134,7 @@ internal sealed class AtomicDirectoryJournal : IDisposable
     {
         byte[] journal = new byte[128];
         if (!DeviceIoControl(_handle, QueryUsnJournal, [], 0, journal, journal.Length, out int returned, IntPtr.Zero))
-            throw new Win32Exception(Marshal.GetLastPInvokeError());
+            throw AtomicDirectoryNative.LastFailure("QueryJournal");
         if (returned is < 56 or > 128) throw new InvalidDataException("AtomicDirectoryJournalBoundsInvalid");
         ulong id = BinaryPrimitives.ReadUInt64LittleEndian(journal);
         long first = BinaryPrimitives.ReadInt64LittleEndian(journal.AsSpan(8));

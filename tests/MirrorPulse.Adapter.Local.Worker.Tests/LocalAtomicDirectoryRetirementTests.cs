@@ -59,6 +59,7 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
             await File.WriteAllTextAsync(Path.Combine(fixture.Tree, "unowned.bin"), "unowned new content", token); injected = true;
         }));
         Assert.IsTrue(injected); Assert.IsTrue(error.NativeErrorCode is 145 or 6800 or 6801);
+        Assert.AreEqual("RemoveDirectory", error.Data["MirrorPulse.AtomicDirectory.NativeCall"]);
         await fixture.AssertOriginalsAsync();
         Assert.AreEqual("unowned new content", await File.ReadAllTextAsync(Path.Combine(fixture.Tree, "unowned.bin")));
         Assert.IsFalse(File.Exists(fixture.Receipt(admission)));
