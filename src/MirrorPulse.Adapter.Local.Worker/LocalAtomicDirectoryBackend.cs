@@ -1,10 +1,9 @@
-#if LOCAL_ATOMIC_DIRECTORY_CANDIDATE
 using System.Security.Cryptography;
 using MirrorPulse.Adapter.Sdk;
 
 namespace MirrorPulse.Adapter.Local.Worker;
 
-/// <summary>Adapts the bound native directory transaction to the candidate SDK on the real Worker pipe.</summary>
+/// <summary>Binds the original directory contract to Local's native deletion transaction.</summary>
 internal sealed class LocalAtomicDirectoryBackend(LocalWorkerRoots roots, string stateDirectory) :
     IAdapterOriginalDirectoryAdmissionBackend, IAdapterAtomicDirectoryDeletionBackend
 {
@@ -29,7 +28,7 @@ internal sealed class LocalAtomicDirectoryBackend(LocalWorkerRoots roots, string
             request.ManifestFingerprint, string.Empty, request.RequestFingerprint);
         authorization = authorization with { RequestFingerprint = authorization.CalculateFingerprint() };
         var receipt = await LocalFileOperations.RetireAtomicDirectoryAsync(paths, original, stateDirectory,
-            enableExperimentalNtfsTransactions: true, checkpoint: LoseFixtureReply, cancellationToken, authorization,
+            enableExperimentalNtfsTransactions: true, checkpoint: null, cancellationToken, authorization,
             configuredSource: true).ConfigureAwait(false);
         return new(1, original.InstanceId, original.AdmissionId, receipt.TransactionId, request.RequestFingerprint,
             retained.AdmissionFingerprint, request.ManifestFingerprint, receipt.Effects.Select((effect, ordinal) =>
@@ -41,22 +40,6 @@ internal sealed class LocalAtomicDirectoryBackend(LocalWorkerRoots roots, string
                 nativeAdmissionFingerprint = original.Fingerprint,
                 nativeReceiptSha256 = Convert.ToHexString(SHA256.HashData(AdapterProtocolJson.Encode(receipt))),
             })));
-
-        ValueTask LoseFixtureReply(LocalAtomicDirectoryCheckpoint checkpoint, CancellationToken token)
-        {
-            if (checkpoint == LocalAtomicDirectoryCheckpoint.AfterCommit)
-            {
-                // The candidate native path has already validated an owned test
-                // fixture. This one-time cut exits after commit and before reply.
-                string cut = Path.Combine(stateDirectory, original.AdmissionId.ToString("N") + ".fixture-lose-reply");
-                if (File.Exists(cut))
-                {
-                    File.Move(cut, cut + ".observed");
-                    Environment.Exit(73);
-                }
-            }
-            return ValueTask.CompletedTask;
-        }
     }
 
     private async Task<(LocalWorkerPaths Paths, LocalAtomicDirectoryAdmission Admission)> LoadAsync(
@@ -93,4 +76,3 @@ internal sealed class LocalAtomicDirectoryBackend(LocalWorkerRoots roots, string
         if (File.Exists(claim)) throw new InvalidDataException("OriginalAtomicDirectoryOperationAlreadyOwned");
     }
 }
-#endif

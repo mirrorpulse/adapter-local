@@ -1,6 +1,6 @@
 extern alias Probe;
 using System.Buffers.Binary;
-using AtomicDirectoryJournal = Probe::MirrorPulse.Adapter.Local.Worker.AtomicDirectoryJournal;
+using ProbeAtomicDirectoryJournal = Probe::MirrorPulse.Adapter.Local.Worker.AtomicDirectoryJournal;
 
 namespace MirrorPulse.Adapter.Local.Worker.Tests;
 
@@ -19,7 +19,7 @@ public sealed class AtomicDirectoryJournalPageTests
         var page = Page(240, Record(2, 100, Other, Other, 0x100),
             Record(3, 149, WatchedObject, WatchedParent, 0x80000000),
             Record(2, 200, Other, WatchedParent, 0x200));
-        Assert.AreEqual(240L, AtomicDirectoryJournal.RequireUnchangedPage(page, 100, 200, Objects, Parents));
+        Assert.AreEqual(240L, ProbeAtomicDirectoryJournal.RequireUnchangedPage(page, 100, 200, Objects, Parents));
     }
 
     [TestMethod]
@@ -30,7 +30,7 @@ public sealed class AtomicDirectoryJournalPageTests
         var record = originalObject ? Record(version, 100, WatchedObject, Other, 0x80000001)
             : Record(version, 100, Other, WatchedParent, 0x100);
         var rejection = Assert.ThrowsExactly<InvalidDataException>(() =>
-            AtomicDirectoryJournal.RequireUnchangedPage(Page(200, record), 100, 200, Objects, Parents));
+            ProbeAtomicDirectoryJournal.RequireUnchangedPage(Page(200, record), 100, 200, Objects, Parents));
         Assert.AreEqual("OriginalAtomicDirectoryHistoryChanged", rejection.Message);
     }
 
@@ -53,7 +53,7 @@ public sealed class AtomicDirectoryJournalPageTests
             _ => Page(100),
         };
         var refusal = Assert.ThrowsExactly<InvalidDataException>(() =>
-            AtomicDirectoryJournal.RequireUnchangedPage(page, 100, 200, Objects, Parents));
+            ProbeAtomicDirectoryJournal.RequireUnchangedPage(page, 100, 200, Objects, Parents));
         Assert.AreEqual(code, refusal.Message);
     }
 

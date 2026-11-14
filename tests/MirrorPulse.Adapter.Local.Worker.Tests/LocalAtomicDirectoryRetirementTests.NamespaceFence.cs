@@ -1,6 +1,6 @@
 extern alias Probe;
 using System.Text.Json;
-using LocalAtomicDirectoryCheckpoint = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryCheckpoint;
+using ProbeLocalAtomicDirectoryCheckpoint = Probe::MirrorPulse.Adapter.Local.Worker.LocalAtomicDirectoryCheckpoint;
 
 namespace MirrorPulse.Adapter.Local.Worker.Tests;
 
@@ -26,9 +26,9 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
     }
 
     [TestMethod]
-    [DataRow(nameof(LocalAtomicDirectoryCheckpoint.AfterOriginalsLocked))]
-    [DataRow(nameof(LocalAtomicDirectoryCheckpoint.AfterFirstChildStaged))]
-    [DataRow(nameof(LocalAtomicDirectoryCheckpoint.AfterParentStaged))]
+    [DataRow(nameof(ProbeLocalAtomicDirectoryCheckpoint.AfterOriginalsLocked))]
+    [DataRow(nameof(ProbeLocalAtomicDirectoryCheckpoint.AfterFirstChildStaged))]
+    [DataRow(nameof(ProbeLocalAtomicDirectoryCheckpoint.AfterParentStaged))]
     public async Task NamespaceFencedBatchRefusesActualIndependentChildCreateBeforeItsCommit(string checkpoint)
     {
         using var fixture = new Fixture();
@@ -54,7 +54,7 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
         using var fixture = new Fixture();
         var admission = await fixture.PrepareAsync(fenceParentNamespace: true);
         await Assert.ThrowsExactlyAsync<IOException>(() => fixture.RetireAsync(admission, (point, _) =>
-            point == LocalAtomicDirectoryCheckpoint.AfterFirstChildStaged
+            point == ProbeLocalAtomicDirectoryCheckpoint.AfterFirstChildStaged
                 ? ValueTask.FromException(new IOException("Owned fenced transaction interruption.")) : ValueTask.CompletedTask));
         await fixture.AssertOriginalsAsync();
         Assert.IsFalse(File.Exists(fixture.Receipt(admission)));
@@ -62,9 +62,9 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
     }
 
     [TestMethod]
-    [DataRow(nameof(LocalAtomicDirectoryCheckpoint.AfterOriginalsLocked))]
-    [DataRow(nameof(LocalAtomicDirectoryCheckpoint.AfterFirstChildStaged))]
-    [DataRow(nameof(LocalAtomicDirectoryCheckpoint.AfterReceiptStaged))]
+    [DataRow(nameof(ProbeLocalAtomicDirectoryCheckpoint.AfterOriginalsLocked))]
+    [DataRow(nameof(ProbeLocalAtomicDirectoryCheckpoint.AfterFirstChildStaged))]
+    [DataRow(nameof(ProbeLocalAtomicDirectoryCheckpoint.AfterReceiptStaged))]
     public async Task NamespaceFencedBatchRecoversRealProcessDeathBeforeCommitWithOriginalBytes(string checkpoint)
     {
         using var fixture = new Fixture();
@@ -82,7 +82,7 @@ public sealed partial class LocalAtomicDirectoryRetirementTests
     {
         using var fixture = new Fixture();
         var admission = await fixture.PrepareAsync(fenceParentNamespace: true);
-        var stopped = await RunProbeAsync("--retire", fixture, admission, nameof(LocalAtomicDirectoryCheckpoint.AfterCommit));
+        var stopped = await RunProbeAsync("--retire", fixture, admission, nameof(ProbeLocalAtomicDirectoryCheckpoint.AfterCommit));
         Assert.AreEqual(73, stopped.ExitCode, stopped.Output);
         Assert.IsFalse(Directory.Exists(fixture.Tree));
         string original = await File.ReadAllTextAsync(fixture.Receipt(admission));
