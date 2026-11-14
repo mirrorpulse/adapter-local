@@ -2,7 +2,8 @@
 param(
     [Parameter(Mandatory, ParameterSetName = 'Child')][string]$Payload,
     [Parameter(Mandatory, ParameterSetName = 'Child')][string]$ExpectedSid,
-    [Parameter(Mandatory, ParameterSetName = 'Child')][string]$Dotnet
+    [Parameter(Mandatory, ParameterSetName = 'Child')][string]$Dotnet,
+    [Parameter(Mandatory, ParameterSetName = 'Child')][string]$TestRunner
 )
 
 $ErrorActionPreference = 'Stop'
@@ -13,30 +14,54 @@ if ($PSCmdlet.ParameterSetName -eq 'Child') {
         if ($caller.User.Value -cne $ExpectedSid -or $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
             throw 'Require the designated ordinary test account.'
         }
+        $profileKey = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey(
+            'SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\' + $ExpectedSid)
+        try { $profile = if ($profileKey) { [string]$profileKey.GetValue('ProfileImagePath') } }
+        finally { if ($profileKey) { $profileKey.Dispose() } }
+        if (-not $profile -or -not [IO.Directory]::Exists($profile)) { throw 'The fresh user profile was not loaded.' }
     } finally { $caller.Dispose() }
     $results = Join-Path $Payload 'work'
-    $env:TEMP = $results
-    $env:TMP = $results
-    $env:DOTNET_CLI_HOME = $results
-    $env:DOTNET_ROOT = [IO.Path]::GetDirectoryName($Dotnet)
-    $env:DOTNET_NOLOGO = '1'
-    $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
-    $env:MP_LOCAL_TEST_WORKER_EXE = Join-Path $Payload 'worker/MirrorPulse.Adapter.Worker.exe'
+    $worker = Join-Path $Payload 'worker/MirrorPulse.Adapter.Worker.exe'
     $assembly = Join-Path $Payload 'tests/MirrorPulse.Adapter.Local.Worker.Tests.dll'
-    if (-not [IO.File]::Exists($assembly) -or -not [IO.File]::Exists($env:MP_LOCAL_TEST_WORKER_EXE)) {
-        throw 'The ordinary-user runner cannot read its deployed test assembly and Worker.'
+    if (-not [IO.File]::Exists($assembly) -or -not [IO.File]::Exists($worker) -or -not [IO.File]::Exists($TestRunner)) {
+        throw 'The ordinary-user runner cannot read its test runner, deployed assembly or Worker.'
     }
-    $testArgs = @('vstest', $assembly, '/TestCaseFilter:FullyQualifiedName~AtomicWorkerCommitsExactAdmittedOriginalsAndReplaysAfterProcessRestart',
+    $start = [Diagnostics.ProcessStartInfo]::new($Dotnet)
+    $start.WorkingDirectory = $results
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $start.Environment['TEMP'] = $results
+    $start.Environment['TMP'] = $results
+    $start.Environment['USERPROFILE'] = $profile
+    $start.Environment['APPDATA'] = Join-Path $profile 'AppData/Roaming'
+    $start.Environment['LOCALAPPDATA'] = Join-Path $profile 'AppData/Local'
+    $start.Environment['DOTNET_CLI_HOME'] = $profile
+    $start.Environment['DOTNET_ROOT'] = [IO.Path]::GetDirectoryName($Dotnet)
+    $start.Environment['DOTNET_NOLOGO'] = '1'
+    $start.Environment['DOTNET_CLI_TELEMETRY_OPTOUT'] = '1'
+    $start.Environment['MP_LOCAL_TEST_WORKER_EXE'] = $worker
+    $testArgs = @('exec', $TestRunner, $assembly, '/TestCaseFilter:FullyQualifiedName~AtomicWorkerCommitsExactAdmittedOriginalsAndReplaysAfterProcessRestart',
         "/ResultsDirectory:$results", '/Logger:trx;LogFileName=ordinary-user.trx', '/Logger:console;verbosity=minimal')
-    Set-Location -LiteralPath $results
-    $testOutput = @(& $Dotnet @testArgs 2>&1)
-    $exitCode = $LASTEXITCODE
+    foreach ($argument in $testArgs) { $start.ArgumentList.Add($argument) }
+    $testProcess = [Diagnostics.Process]::Start($start)
+    try {
+        $stdout = $testProcess.StandardOutput.ReadToEndAsync()
+        $stderr = $testProcess.StandardError.ReadToEndAsync()
+        if (-not $testProcess.WaitForExit(75000)) {
+            $testProcess.Kill($true)
+            $testProcess.WaitForExit()
+            throw 'VSTest exceeded the ordinary-user budget.'
+        }
+        $exitCode = $testProcess.ExitCode
+        $text = $stdout.GetAwaiter().GetResult() + "`n" + $stderr.GetAwaiter().GetResult()
+    } finally { $testProcess.Dispose() }
     $artifact = [IO.File]::Exists((Join-Path $results 'ordinary-user.trx'))
-    $text = $testOutput -join "`n"
     [ordered]@{
         exitCode = $exitCode
         resultWritten = $artifact
-        outputLines = $testOutput.Count
+        outputCharacters = $text.Trim().Length
         testRunnerReported = $text -match 'VSTest'
         matchedNoTests = $text -match 'No test (matches|is available)|No tests (match|were found)'
         sdkUnavailable = $text -match 'No .NET SDKs were found|It was not possible to find any installed .NET SDKs'
@@ -57,6 +82,8 @@ $scratch = Join-Path $base $name
 $work = Join-Path $scratch 'work'
 $output = Join-Path $repo 'artifacts/test-results/atomic-delete-nonadmin'
 $dotnetPath = (Get-Command dotnet -CommandType Application).Source
+$sdkVersion = (Get-Content -LiteralPath (Join-Path $repo 'global.json') -Raw | ConvertFrom-Json).sdk.version
+$testRunner = Join-Path ([IO.Path]::GetDirectoryName($dotnetPath)) "sdk/$sdkVersion/vstest.console.dll"
 $pwshPath = [Environment]::ProcessPath
 $architecture = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
 $runtime = switch ($architecture) { 'X64' { 'win-x64' } 'Arm64' { 'win-arm64' } default { throw 'Unexpected test architecture.' } }
@@ -113,7 +140,7 @@ try {
     $childEnvironment['DOTNET_NOLOGO'] = '1'
     $childEnvironment['DOTNET_CLI_TELEMETRY_OPTOUT'] = '1'
     $arguments = @('-NoProfile', '-NonInteractive', '-File', ('"' + $script + '"'), '-Payload', ('"' + $scratch + '"'),
-        '-ExpectedSid', $user.SID.Value, '-Dotnet', ('"' + $dotnetPath + '"'))
+        '-ExpectedSid', $user.SID.Value, '-Dotnet', ('"' + $dotnetPath + '"'), '-TestRunner', ('"' + $testRunner + '"'))
     $launch = @{FilePath=$pwshPath;Credential=$credential;LoadUserProfile=$true;WindowStyle='Hidden';PassThru=$true;
         WorkingDirectory=$env:SystemRoot;ArgumentList=$arguments;Environment=$childEnvironment;
         RedirectStandardOutput=(Join-Path $scratch 'stdout.log');RedirectStandardError=(Join-Path $scratch 'stderr.log')}
@@ -136,8 +163,8 @@ try {
         $summary = Join-Path $work 'ordinary-user-summary.json'
         if (Test-Path -LiteralPath $summary -PathType Leaf) {
             $details = Get-Content -LiteralPath $summary -Raw | ConvertFrom-Json
-            Write-Host ("VSTest exit {0}, lines {1}, runner {2}, no tests {3}, SDK unavailable {4}, runtime unavailable {5}, aborted {6}." -f
-                [int]$details.exitCode, [int]$details.outputLines, [bool]$details.testRunnerReported,
+            Write-Host ("VSTest exit {0}, output characters {1}, runner {2}, no tests {3}, SDK unavailable {4}, runtime unavailable {5}, aborted {6}." -f
+                [int]$details.exitCode, [int]$details.outputCharacters, [bool]$details.testRunnerReported,
                 [bool]$details.matchedNoTests, [bool]$details.sdkUnavailable, [bool]$details.runtimeUnavailable, [bool]$details.executionAborted)
         } else { Write-Host "Ordinary-user test exit code: $($process.ExitCode)." }
         throw 'The ordinary-user fixture produced no test result.'
