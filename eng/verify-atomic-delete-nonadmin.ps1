@@ -18,13 +18,33 @@ if ($PSCmdlet.ParameterSetName -eq 'Child') {
     $env:TEMP = $results
     $env:TMP = $results
     $env:DOTNET_CLI_HOME = $results
+    $env:DOTNET_ROOT = [IO.Path]::GetDirectoryName($Dotnet)
+    $env:DOTNET_NOLOGO = '1'
+    $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
     $env:MP_LOCAL_TEST_WORKER_EXE = Join-Path $Payload 'worker/MirrorPulse.Adapter.Worker.exe'
     $assembly = Join-Path $Payload 'tests/MirrorPulse.Adapter.Local.Worker.Tests.dll'
-    [IO.File]::WriteAllText((Join-Path $results 'ordinary-user.started'), 'verified')
+    if (-not [IO.File]::Exists($assembly) -or -not [IO.File]::Exists($env:MP_LOCAL_TEST_WORKER_EXE)) {
+        throw 'The ordinary-user runner cannot read its deployed test assembly and Worker.'
+    }
     $testArgs = @('vstest', $assembly, '/TestCaseFilter:FullyQualifiedName~AtomicWorkerCommitsExactAdmittedOriginalsAndReplaysAfterProcessRestart',
         "/ResultsDirectory:$results", '/Logger:trx;LogFileName=ordinary-user.trx', '/Logger:console;verbosity=minimal')
-    & $Dotnet @testArgs
-    exit $LASTEXITCODE
+    Set-Location -LiteralPath $results
+    $testOutput = @(& $Dotnet @testArgs 2>&1)
+    $exitCode = $LASTEXITCODE
+    $artifact = [IO.File]::Exists((Join-Path $results 'ordinary-user.trx'))
+    $text = $testOutput -join "`n"
+    [ordered]@{
+        exitCode = $exitCode
+        resultWritten = $artifact
+        outputLines = $testOutput.Count
+        testRunnerReported = $text -match 'VSTest'
+        matchedNoTests = $text -match 'No test (matches|is available)|No tests (match|were found)'
+        sdkUnavailable = $text -match 'No .NET SDKs were found|It was not possible to find any installed .NET SDKs'
+        runtimeUnavailable = $text -match 'You must install or update .NET|framework.*was not found'
+        executionAborted = $text -match 'Test Run Aborted|testhost process exited|Could not find'
+    } | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $results 'ordinary-user-summary.json') -Encoding utf8
+    if (-not $artifact) { exit 1 }
+    exit $exitCode
 }
 
 if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_ENVIRONMENT -cne 'github-hosted') {
@@ -113,8 +133,13 @@ try {
             }
         }
     } else {
-        $started = Test-Path -LiteralPath (Join-Path $work 'ordinary-user.started') -PathType Leaf
-        Write-Host "Ordinary-user test started: $started; exit code: $($process.ExitCode)."
+        $summary = Join-Path $work 'ordinary-user-summary.json'
+        if (Test-Path -LiteralPath $summary -PathType Leaf) {
+            $details = Get-Content -LiteralPath $summary -Raw | ConvertFrom-Json
+            Write-Host ("VSTest exit {0}, lines {1}, runner {2}, no tests {3}, SDK unavailable {4}, runtime unavailable {5}, aborted {6}." -f
+                [int]$details.exitCode, [int]$details.outputLines, [bool]$details.testRunnerReported,
+                [bool]$details.matchedNoTests, [bool]$details.sdkUnavailable, [bool]$details.runtimeUnavailable, [bool]$details.executionAborted)
+        } else { Write-Host "Ordinary-user test exit code: $($process.ExitCode)." }
         throw 'The ordinary-user fixture produced no test result.'
     }
     if ($process.ExitCode -ne 0 -or $result.Count -ne 2 -or @($result | Where-Object outcome -ne 'Passed').Count -ne 0) {
