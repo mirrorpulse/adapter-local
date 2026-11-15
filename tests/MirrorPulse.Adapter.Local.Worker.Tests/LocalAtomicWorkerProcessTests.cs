@@ -120,7 +120,7 @@ public sealed class LocalAtomicWorkerProcessTests
         fixture.RequireOriginals();
     }
 
-    [TestMethod]
+    [TestMethod, DoNotParallelize]
     public async Task AtomicWorkerRecoversACommittedEffectWhenTheHostNeverReadsItsFirstReply()
     {
         using var fixture = new Fixture();
