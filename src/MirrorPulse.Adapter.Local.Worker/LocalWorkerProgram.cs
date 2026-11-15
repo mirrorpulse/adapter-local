@@ -44,10 +44,15 @@ public static class LocalWorkerProgram
                 throw new InvalidDataException("UnadvertisedCapabilitySelected");
             bool durableMoveSelected = ready.Capabilities.Contains(DurableDirectoryMoveCapability, StringComparer.Ordinal);
             bool durableCopySelected = ready.Capabilities.Contains(DurableDirectoryCopyCapability, StringComparer.Ordinal);
-            await using var protocol = new LocalWorkerProtocol(channel, arguments, roots, cache, stateDirectory, durableMoveSelected, durableCopySelected);
+            string[] durableCopyRoots = durableCopySelected
+                ? ready.Roots.Where(root => root.Enabled && LocalFileOperations.SupportsDurableCopy(roots.GetPaths(root.RootKey), stateDirectory!))
+                    .Select(root => root.RootKey).ToArray()
+                : [];
+            await using var protocol = new LocalWorkerProtocol(channel, arguments, roots, cache, stateDirectory, durableMoveSelected, durableCopyRoots);
             if (LocalAtomicDirectoryBackend.IsEnabled(stateDirectory))
                 protocol.ConfigureAtomicDirectoryBackend(new(roots, stateDirectory!), ready.Capabilities);
-            await channel.SendAsync("Connected", helloId, false, new { }, cancellationToken).ConfigureAwait(false);
+            await channel.SendAsync("Connected", helloId, false, durableCopySelected ? new { durableCopyRoots } : (object)new { },
+                cancellationToken).ConfigureAwait(false);
             await protocol.RunAsync(cancellationToken).ConfigureAwait(false);
             return 0;
         }

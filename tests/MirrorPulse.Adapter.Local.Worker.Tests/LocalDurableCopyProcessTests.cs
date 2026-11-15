@@ -60,6 +60,36 @@ public sealed class LocalDurableCopyProcessTests
         Assert.IsFalse(Directory.Exists(fixture.Target));
     }
 
+    [TestMethod]
+    public async Task AReplacementDirectoryCannotInheritTheOriginalParentCopyOrReadback()
+    {
+        using var fixture = new Fixture();
+        Guid parent = Guid.NewGuid();
+        await using var worker = await LocalWorkerSession.StartWithStateAsync(fixture.Root, fixture.Instance, selectDurableCopy: true);
+        await SendCopyAsync(worker, parent, directory: true, mode: "start");
+        Assert.AreEqual("MutationComplete", (await worker.ReadAsync()).MessageType);
+        object stat = new { rootKey = "docs", path = "copied", durableDirectoryCopyOperationId = parent };
+        Assert.AreEqual("StatResult", (await worker.RequestAsync("Stat", stat)).MessageType);
+        Directory.Move(fixture.Target, fixture.Target + ".previous");
+        Directory.CreateDirectory(fixture.Target);
+
+        var read = await worker.RequestAsync("Stat", stat);
+        Assert.AreEqual("OperationError", read.MessageType);
+        Assert.AreEqual("RemoteConflict", read.Payload.GetProperty("code").GetString());
+        var child = await worker.RequestAsync("CreateDirectory", new
+        {
+            operationId = Guid.NewGuid(),
+            rootKey = "docs",
+            path = "copied/child",
+            mustBeAbsent = true,
+            durableDirectoryCopy = "start",
+            durableDirectoryCopyParentId = parent
+        });
+        Assert.AreEqual("OperationError", child.MessageType);
+        Assert.AreEqual("RemoteConflict", child.Payload.GetProperty("code").GetString());
+        Assert.IsFalse(Directory.Exists(Path.Combine(fixture.Target, "child")));
+    }
+
     private static async Task<Guid> SendCopyAsync(LocalWorkerSession worker, Guid operationId, bool directory, string mode)
     {
         Guid request = Guid.NewGuid();
