@@ -87,7 +87,7 @@ internal sealed class LocalWorkerSession : IAsyncDisposable
     }
 
     internal static async Task<LocalWorkerSession> StartWithStateAsync(string fixture, Guid instance, string? stateOverride = null,
-        bool selectDurableMove = true, bool selectDurableCopy = false)
+        bool selectDurableMove = true, bool selectDurableCopy = false, bool selectCopyPreparation = false)
     {
         string source = Path.Combine(fixture, "source");
         string state = stateOverride ?? Path.Combine(fixture, "state");
@@ -106,6 +106,11 @@ internal sealed class LocalWorkerSession : IAsyncDisposable
             {
                 CollectionAssert.Contains(offered, LocalWorkerProgram.DurableDirectoryCopyCapability);
                 capabilities = [.. capabilities, LocalWorkerProgram.DurableDirectoryCopyCapability];
+            }
+            if (selectCopyPreparation)
+            {
+                CollectionAssert.Contains(offered, LocalWorkerProgram.DurableDirectoryCopyPreparationCapability);
+                capabilities = [.. capabilities, LocalWorkerProgram.DurableDirectoryCopyPreparationCapability];
             }
             AdapterRootBinding[] roots = [new("docs", true, new Dictionary<string, string> { ["sourceDirectory"] = source })];
             await session.SendAsync("Ready", hello.RequestId,

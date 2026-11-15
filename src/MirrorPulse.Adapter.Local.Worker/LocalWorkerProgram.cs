@@ -8,6 +8,7 @@ public static class LocalWorkerProgram
 {
     internal const string DurableDirectoryMoveCapability = "local-durable-directory-move";
     internal const string DurableDirectoryCopyCapability = "local-durable-directory-copy";
+    internal const string DurableDirectoryCopyPreparationCapability = "local-durable-directory-copy-preparation";
 
     public static async Task<int> RunAsync(IReadOnlyList<string> args,
         CancellationToken cancellationToken = default)
@@ -25,7 +26,7 @@ public static class LocalWorkerProgram
             capabilities = [.. capabilities, DurableDirectoryMoveCapability];
         if (LocalAtomicDirectoryBackend.IsEnabled(stateDirectory))
             capabilities = [.. capabilities, AdapterOriginalDirectoryWire.Capability, AdapterAtomicDirectoryDeletionWire.Capability,
-                DurableDirectoryCopyCapability];
+                DurableDirectoryCopyCapability, DurableDirectoryCopyPreparationCapability];
         var offer = new AdapterHello(new(2, 2), capabilities);
         await channel.SendAsync("Hello", helloId, false, offer, cancellationToken).ConfigureAwait(false);
         try
@@ -48,7 +49,10 @@ public static class LocalWorkerProgram
                 ? ready.Roots.Where(root => root.Enabled && LocalFileOperations.SupportsDurableCopy(roots.GetPaths(root.RootKey), stateDirectory!))
                     .Select(root => root.RootKey).ToArray()
                 : [];
-            await using var protocol = new LocalWorkerProtocol(channel, arguments, roots, cache, stateDirectory, durableMoveSelected, durableCopyRoots);
+            bool durableCopyPreparationSelected = ready.Capabilities.Contains(DurableDirectoryCopyPreparationCapability, StringComparer.Ordinal);
+            if (durableCopyPreparationSelected && !durableCopySelected) throw new InvalidDataException("InvalidDurableCopyCapabilities");
+            await using var protocol = new LocalWorkerProtocol(channel, arguments, roots, cache, stateDirectory,
+                durableMoveSelected, durableCopyRoots, durableCopyPreparationSelected);
             if (LocalAtomicDirectoryBackend.IsEnabled(stateDirectory))
                 protocol.ConfigureAtomicDirectoryBackend(new(roots, stateDirectory!), ready.Capabilities);
             await channel.SendAsync("Connected", helloId, false, durableCopySelected ? new { durableCopyRoots } : (object)new { },

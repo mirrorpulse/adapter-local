@@ -58,6 +58,13 @@ acceptance commit together in a local NTFS transaction. The Worker state and
 target must be on the same volume. With `durableDirectoryCopy: "resume"`, the
 same request replays its committed revision or continues an authenticated
 pending intent. A missing intent and receipt yield `MutationOutcomeAmbiguous`.
+If both peers also select `local-durable-directory-copy-preparation`, the Host
+can send `PrepareDirectoryCopy` with the original operation ID, target,
+absent-target precondition, kind, and parent copy ID when required. Files also
+require `length` and `contentSha256`. The Worker persists the intent
+without changing the target and replies with `DirectoryCopyPrepared`. The Host
+can then record its dispatch start and call the original mutation in `resume`
+mode. Repeating preparation with the same request is safe across Worker restarts.
 For a copied directory, `Stat.durableDirectoryCopyOperationId` verifies the
 current directory against the original receipt even after child writes change
 the revision. A child copy can supply `durableDirectoryCopyParentId` to require

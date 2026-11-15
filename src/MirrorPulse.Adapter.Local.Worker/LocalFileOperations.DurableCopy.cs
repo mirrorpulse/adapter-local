@@ -7,7 +7,7 @@ namespace MirrorPulse.Adapter.Local.Worker;
 
 internal enum LocalDurableCopyCheckpoint { AfterIntent, AfterNativeStaged, AfterReceiptStaged, AfterCommit }
 
-internal sealed record LocalDurableCopyContent(Stream Data, long Length, string Sha256);
+internal sealed record LocalDurableCopyContent(Stream? Data, long Length, string Sha256);
 
 internal static partial class LocalFileOperations
 {
@@ -69,10 +69,23 @@ internal static partial class LocalFileOperations
 
     /// <summary>Publishes an absent target and retains its exact acceptance in the same local transaction.</summary>
     /// <remarks>Recovery requires this Worker's original private intent or receipt. A later occupant is not a receipt.</remarks>
-    internal static async Task<string> PublishDurableCopyAsync(Guid instanceId, LocalWorkerPaths paths,
+    internal static Task<string> PublishDurableCopyAsync(Guid instanceId, LocalWorkerPaths paths,
         AdapterOperationRequest operation, string stateDirectory, LocalDurableCopyContent? content, bool recovering,
         Func<LocalDurableCopyCheckpoint, CancellationToken, ValueTask>? checkpoint = null, Guid? parentCopyOperationId = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        RunDurableCopyAsync(instanceId, paths, operation, stateDirectory, content, recovering, prepareOnly: false,
+            checkpoint, parentCopyOperationId, cancellationToken);
+
+    internal static async Task PrepareDurableCopyAsync(Guid instanceId, LocalWorkerPaths paths,
+        AdapterOperationRequest operation, string stateDirectory, LocalDurableCopyContent? content, Guid? parentCopyOperationId,
+        CancellationToken cancellationToken) =>
+        _ = await RunDurableCopyAsync(instanceId, paths, operation, stateDirectory, content, recovering: false, prepareOnly: true,
+            null, parentCopyOperationId, cancellationToken).ConfigureAwait(false);
+
+    private static async Task<string> RunDurableCopyAsync(Guid instanceId, LocalWorkerPaths paths,
+        AdapterOperationRequest operation, string stateDirectory, LocalDurableCopyContent? content, bool recovering, bool prepareOnly,
+        Func<LocalDurableCopyCheckpoint, CancellationToken, ValueTask>? checkpoint, Guid? parentCopyOperationId,
+        CancellationToken cancellationToken)
     {
         AdapterProtocolJson.ValidateMutation(operation, requiresDestination: false);
         if (instanceId == Guid.Empty || operation.OperationId == Guid.Empty || operation.IsDirectory == (content is not null) ||
@@ -80,8 +93,9 @@ internal static partial class LocalFileOperations
             parentCopyOperationId is { } parentId && (parentId == Guid.Empty || parentId == operation.OperationId) ||
             operation.Preconditions is not { ExpectedRevision: null, DestinationMustBeAbsent: true })
             throw new InvalidDataException("DurableCopyPreconditionsRequired");
-        if (content is not null && (content.Length < 0 || !content.Data.CanRead || !content.Data.CanSeek ||
-            content.Data.Length != content.Length || content.Sha256.Length != 64 ||
+        if (content is not null && (content.Length < 0 ||
+            (prepareOnly ? content.Data is not null : content.Data is not { CanRead: true, CanSeek: true } data || data.Length != content.Length) ||
+            content.Sha256.Length != 64 ||
             !content.Sha256.All(character => character is >= '0' and <= '9' or >= 'A' and <= 'F')))
             throw new InvalidDataException("DurableCopyContentInvalid");
         if (!Path.IsPathFullyQualified(stateDirectory) || !Directory.Exists(stateDirectory))
@@ -155,19 +169,22 @@ internal static partial class LocalFileOperations
             else
             {
                 if (recovering) throw new InvalidDataException("MutationOutcomeAmbiguous");
+                if (prepareOnly && (File.Exists(destination) || Directory.Exists(destination)))
+                    throw new InvalidDataException("RemoteConflict");
                 await WriteDurableIntentAsync(intentPath, intent, cancellationToken).ConfigureAwait(false);
             }
             await AtAsync(LocalDurableCopyCheckpoint.AfterIntent, cancellationToken).ConfigureAwait(false);
+            if (prepareOnly) return request;
             // Upload size determines the copy time. The Worker owns cancellation and
             // closing the transaction before commit rolls back the target and receipt.
             using var transaction = content is null ? AtomicDirectoryNative.Begin() : AtomicDirectoryNative.Begin(timeoutMilliseconds: 0);
             if (content is null)
                 AtomicDirectoryNative.CreateDirectory(destination, transaction);
-            else
+            else if (content.Data is { } input)
             {
                 using var output = AtomicDirectoryNative.CreateFile(destination, transaction, "CreateCopyTransacted");
-                content.Data.Position = 0;
-                await content.Data.CopyToAsync(output, cancellationToken).ConfigureAwait(false);
+                input.Position = 0;
+                await input.CopyToAsync(output, cancellationToken).ConfigureAwait(false);
                 output.Flush(flushToDisk: true);
             }
             string generation;

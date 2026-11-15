@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using MirrorPulse.Adapter.Local.Worker;
 
 namespace MirrorPulse.Adapter.Local.Worker.Tests;
@@ -118,6 +119,53 @@ public sealed class LocalDurableCopyProcessTests
             await worker.SendChunkAsync(request, streamId, "docs", 0, content, last: true);
         }
         return request;
+    }
+
+    [TestMethod]
+    [DataRow(false)]
+    [DataRow(true)]
+    public async Task WorkerPreparationSurvivesExitBeforeAnyTargetMutation(bool directory)
+    {
+        using var fixture = new Fixture();
+        Guid operationId = Guid.NewGuid();
+        byte[] bytes = [1, 2, 3, 5, 8];
+        var request = new Dictionary<string, object>
+        {
+            ["operationId"] = operationId,
+            ["rootKey"] = "docs",
+            ["path"] = "copied",
+            ["isDirectory"] = directory,
+            ["preconditions"] = new { destinationMustBeAbsent = true }
+        };
+        if (!directory)
+        {
+            request["length"] = bytes.Length;
+            request["contentSha256"] = Convert.ToHexString(SHA256.HashData(bytes));
+        }
+        await using (var worker = await LocalWorkerSession.StartWithStateAsync(fixture.Root, fixture.Instance,
+            selectDurableCopy: true, selectCopyPreparation: true))
+        {
+            var prepared = await worker.RequestAsync("PrepareDirectoryCopy", request);
+            Assert.AreEqual("DirectoryCopyPrepared", prepared.MessageType);
+            Assert.AreEqual(operationId, prepared.Payload.GetProperty("operationId").GetGuid());
+        }
+        Assert.IsFalse(File.Exists(fixture.Target) || Directory.Exists(fixture.Target));
+        Assert.IsFalse(File.Exists(fixture.Receipt(operationId)));
+
+        await using var restarted = await LocalWorkerSession.StartWithStateAsync(fixture.Root, fixture.Instance,
+            selectDurableCopy: true, selectCopyPreparation: true);
+        if (!directory) request["contentSha256"] = new string('0', 64);
+        else request["path"] = "another";
+        var rejected = await restarted.RequestAsync("PrepareDirectoryCopy", request);
+        Assert.AreEqual("OperationError", rejected.MessageType);
+        Assert.AreEqual("OperationBindingMismatch", rejected.Payload.GetProperty("code").GetString());
+        Guid dispatched = await SendCopyAsync(restarted, operationId, directory, "resume");
+        var result = await restarted.ReadAsync();
+        Assert.AreEqual(dispatched, result.RequestId);
+        Assert.AreEqual(directory ? "MutationComplete" : "UploadComplete", result.MessageType);
+        Assert.IsTrue(File.Exists(fixture.Receipt(operationId)));
+        if (directory) Assert.IsTrue(Directory.Exists(fixture.Target));
+        else CollectionAssert.AreEqual(bytes, await File.ReadAllBytesAsync(fixture.Target));
     }
 
     private sealed class Fixture : IDisposable

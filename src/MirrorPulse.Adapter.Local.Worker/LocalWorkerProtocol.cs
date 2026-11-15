@@ -8,7 +8,8 @@ namespace MirrorPulse.Adapter.Local.Worker;
 
 /// <summary>One reader multiplexes control and bounded SDK transfer frames for all authorized roots.</summary>
 internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, AdapterWorkerProcessArguments arguments,
-    LocalWorkerRoots roots, string cache, string? stateDirectory, bool durableMoveSelected, IReadOnlyList<string> durableCopyRoots) : IAsyncDisposable
+    LocalWorkerRoots roots, string cache, string? stateDirectory, bool durableMoveSelected, IReadOnlyList<string> durableCopyRoots,
+    bool durableCopyPreparationSelected) : IAsyncDisposable
 {
     private enum CopyMode { Ordinary, Start, Resume }
 
@@ -68,6 +69,7 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
                         break;
                     case "List": await ListAsync(command, address, paths, cancellationToken).ConfigureAwait(false); break;
                     case "ReadRange": await ReadAsync(command, address, paths, cancellationToken).ConfigureAwait(false); break;
+                    case "PrepareDirectoryCopy": await PrepareCopyAsync(command, address, paths, cancellationToken).ConfigureAwait(false); break;
                     case "Upload": await BeginUploadAsync(command, address, paths, cancellationToken).ConfigureAwait(false); break;
                     case "Move":
                     case "Delete":
@@ -80,6 +82,30 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
                 await ErrorAsync(command, exception, cancellationToken).ConfigureAwait(false);
             }
         }
+    }
+
+    private async Task PrepareCopyAsync(AdapterControlFrame command, AdapterFileAddress address, LocalWorkerPaths paths, CancellationToken token)
+    {
+        if (!durableCopyPreparationSelected || !durableCopyRoots.Contains(address.RootKey, StringComparer.Ordinal))
+            throw new InvalidDataException("CapabilityUnavailable");
+        var operation = DecodeOperation(command);
+        LocalFileOperations.RequireNoDurableDirectoryMove(stateDirectory, operation.OperationId);
+        _atomicDirectories?.RequireOrdinaryOperation(operation.OperationId);
+        if (_accepted.ContainsKey(operation.OperationId) || _uploads.Values.Any(upload => upload.Operation.OperationId == operation.OperationId))
+            throw new InvalidDataException("OperationBindingMismatch");
+        bool hasLength = command.Payload.TryGetProperty("length", out var length);
+        bool hasHash = command.Payload.TryGetProperty("contentSha256", out var hash);
+        LocalDurableCopyContent? content = null;
+        if (hasLength || hasHash)
+        {
+            if (!hasLength || !hasHash || length.ValueKind != JsonValueKind.Number || !length.TryGetInt64(out long size) ||
+                hash.ValueKind != JsonValueKind.String || hash.GetString() is not { } sha256)
+                throw new InvalidDataException("DurableCopyContentInvalid");
+            content = new(null, size, sha256);
+        }
+        await LocalFileOperations.PrepareDurableCopyAsync(arguments.InstanceId, paths, operation, stateDirectory!, content,
+            ReadParentCopy(command, CopyMode.Start), token).ConfigureAwait(false);
+        await ReplyAsync(command, "DirectoryCopyPrepared", new { rootKey = address.RootKey, operationId = operation.OperationId }, token).ConfigureAwait(false);
     }
 
     private async Task AtomicDirectoryAsync(AdapterControlFrame command, CancellationToken token)
