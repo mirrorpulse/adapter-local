@@ -49,6 +49,17 @@ accepts the container rename. Descendant content and revisions remain separate
 from the move receipt. If the selected durable path cannot run, the Worker
 returns an error before performing a non-transactional rename.
 
+When both peers select `local-durable-directory-copy`, the Host can set
+`durableDirectoryCopy: "start"` on `CreateDirectory` or `Upload` with an
+absent-target precondition. The Worker binds the operation ID to the original
+root, path, kind, and complete upload bytes. The new target and immutable
+acceptance commit together in a local NTFS transaction. The Worker state and
+target must be on the same volume. With `durableDirectoryCopy: "resume"`, the
+same request replays its committed revision or continues an authenticated
+pending intent. A missing intent and receipt yield `MutationOutcomeAmbiguous`.
+An existing target stays subject to independent Host verification before
+source deletion.
+
 Native contracts: [CreateFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew),
 [file rename information](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_rename_info),
 and [handle-based mutation](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-setfileinformationbyhandle).
