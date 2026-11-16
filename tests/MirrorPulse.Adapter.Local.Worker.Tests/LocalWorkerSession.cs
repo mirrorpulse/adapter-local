@@ -87,7 +87,7 @@ internal sealed class LocalWorkerSession : IAsyncDisposable
     }
 
     internal static async Task<LocalWorkerSession> StartWithStateAsync(string fixture, Guid instance, string? stateOverride = null,
-        bool selectDurableMove = true)
+        bool selectDurableMove = true, bool selectDurableCopy = false, bool selectCopyPreparation = false)
     {
         string source = Path.Combine(fixture, "source");
         string state = stateOverride ?? Path.Combine(fixture, "state");
@@ -99,8 +99,19 @@ internal sealed class LocalWorkerSession : IAsyncDisposable
             var hello = await session.ReadAsync();
             Assert.AreEqual("Hello", hello.MessageType);
             string capability = LocalWorkerProgram.DurableDirectoryMoveCapability;
-            CollectionAssert.Contains(AdapterHandshake.ReadHello(hello.Payload).Capabilities.ToArray(), capability);
+            var offered = AdapterHandshake.ReadHello(hello.Payload).Capabilities.ToArray();
+            CollectionAssert.Contains(offered, capability);
             IReadOnlyList<string> capabilities = selectDurableMove ? [.. AdapterHandshake.V2Capabilities, capability] : AdapterHandshake.V2Capabilities;
+            if (selectDurableCopy)
+            {
+                CollectionAssert.Contains(offered, LocalWorkerProgram.DurableDirectoryCopyCapability);
+                capabilities = [.. capabilities, LocalWorkerProgram.DurableDirectoryCopyCapability];
+            }
+            if (selectCopyPreparation)
+            {
+                CollectionAssert.Contains(offered, LocalWorkerProgram.DurableDirectoryCopyPreparationCapability);
+                capabilities = [.. capabilities, LocalWorkerProgram.DurableDirectoryCopyPreparationCapability];
+            }
             AdapterRootBinding[] roots = [new("docs", true, new Dictionary<string, string> { ["sourceDirectory"] = source })];
             await session.SendAsync("Ready", hello.RequestId,
                 new AdapterReady(2, capabilities, roots, new Dictionary<string, string>()), response: true);

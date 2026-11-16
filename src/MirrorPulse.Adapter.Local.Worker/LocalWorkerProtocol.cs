@@ -8,8 +8,11 @@ namespace MirrorPulse.Adapter.Local.Worker;
 
 /// <summary>One reader multiplexes control and bounded SDK transfer frames for all authorized roots.</summary>
 internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, AdapterWorkerProcessArguments arguments,
-    LocalWorkerRoots roots, string cache, string? stateDirectory, bool durableMoveSelected) : IAsyncDisposable
+    LocalWorkerRoots roots, string cache, string? stateDirectory, bool durableMoveSelected, IReadOnlyList<string> durableCopyRoots,
+    bool durableCopyPreparationSelected) : IAsyncDisposable
 {
+    private enum CopyMode { Ordinary, Start, Resume }
+
     private readonly Dictionary<Guid, PendingUpload> _uploads = [];
     private readonly Dictionary<Guid, AcceptedUpload> _accepted = [];
     private readonly Queue<Guid> _acceptedOrder = [];
@@ -59,11 +62,14 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
                         await ReplyAsync(command, "StatResult", new
                         {
                             rootKey = address.RootKey,
-                            revision = await LocalFileOperations.RevisionAsync(paths, address.Path, cancellationToken).ConfigureAwait(false)
+                            revision = command.Payload.TryGetProperty("durableDirectoryCopyOperationId", out var original)
+                                ? await ReadDurableDirectoryRevisionAsync(address, paths, original, cancellationToken).ConfigureAwait(false)
+                                : await LocalFileOperations.RevisionAsync(paths, address.Path, cancellationToken).ConfigureAwait(false)
                         }, cancellationToken).ConfigureAwait(false);
                         break;
                     case "List": await ListAsync(command, address, paths, cancellationToken).ConfigureAwait(false); break;
                     case "ReadRange": await ReadAsync(command, address, paths, cancellationToken).ConfigureAwait(false); break;
+                    case "PrepareDirectoryCopy": await PrepareCopyAsync(command, address, paths, cancellationToken).ConfigureAwait(false); break;
                     case "Upload": await BeginUploadAsync(command, address, paths, cancellationToken).ConfigureAwait(false); break;
                     case "Move":
                     case "Delete":
@@ -78,6 +84,30 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
         }
     }
 
+    private async Task PrepareCopyAsync(AdapterControlFrame command, AdapterFileAddress address, LocalWorkerPaths paths, CancellationToken token)
+    {
+        if (!durableCopyPreparationSelected || !durableCopyRoots.Contains(address.RootKey, StringComparer.Ordinal))
+            throw new InvalidDataException("CapabilityUnavailable");
+        var operation = DecodeOperation(command);
+        LocalFileOperations.RequireNoDurableDirectoryMove(stateDirectory, operation.OperationId);
+        _atomicDirectories?.RequireOrdinaryOperation(operation.OperationId);
+        if (_accepted.ContainsKey(operation.OperationId) || _uploads.Values.Any(upload => upload.Operation.OperationId == operation.OperationId))
+            throw new InvalidDataException("OperationBindingMismatch");
+        bool hasLength = command.Payload.TryGetProperty("length", out var length);
+        bool hasHash = command.Payload.TryGetProperty("contentSha256", out var hash);
+        LocalDurableCopyContent? content = null;
+        if (hasLength || hasHash)
+        {
+            if (!hasLength || !hasHash || length.ValueKind != JsonValueKind.Number || !length.TryGetInt64(out long size) ||
+                hash.ValueKind != JsonValueKind.String || hash.GetString() is not { } sha256)
+                throw new InvalidDataException("DurableCopyContentInvalid");
+            content = new(null, size, sha256);
+        }
+        await LocalFileOperations.PrepareDurableCopyAsync(arguments.InstanceId, paths, operation, stateDirectory!, content,
+            ReadParentCopy(command, CopyMode.Start), token).ConfigureAwait(false);
+        await ReplyAsync(command, "DirectoryCopyPrepared", new { rootKey = address.RootKey, operationId = operation.OperationId }, token).ConfigureAwait(false);
+    }
+
     private async Task AtomicDirectoryAsync(AdapterControlFrame command, CancellationToken token)
     {
         var backend = _atomicDirectories ?? throw new InvalidDataException("CapabilityUnavailable");
@@ -87,7 +117,7 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
             if (command.MessageType == AdapterOriginalDirectoryWire.AdmissionRequestMessage)
             {
                 var request = AdapterOriginalDirectoryWire.ReadAdmissionRequest(command, _atomicCapabilities);
-                if (request.Operations.Any(value => LocalFileOperations.HasDirectoryMoveOwnership(stateDirectory, value.Operation.OperationId)))
+                if (request.Operations.Any(value => HasDurableMutationOwnership(value.Operation.OperationId)))
                     throw new InvalidDataException("OriginalAtomicDirectoryOperationAlreadyOwned");
                 response = await AdapterOriginalDirectoryDispatcher.DispatchAsync(command, _atomicCapabilities, backend, token).ConfigureAwait(false);
             }
@@ -97,7 +127,7 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
                 var activeUploads = _uploads.Values.Select(upload => upload.Operation.OperationId).ToHashSet();
                 if (request.OriginalRequest.Operations.Any(value =>
                     _accepted.ContainsKey(value.Operation.OperationId) || activeUploads.Contains(value.Operation.OperationId) ||
-                    LocalFileOperations.HasDirectoryMoveOwnership(stateDirectory, value.Operation.OperationId)))
+                    HasDurableMutationOwnership(value.Operation.OperationId)))
                     throw new InvalidDataException("OriginalAtomicDirectoryOperationAlreadyOwned");
                 response = await AdapterAtomicDirectoryDeletionDispatcher.DispatchAsync(command, _atomicCapabilities, backend, token).ConfigureAwait(false);
             }
@@ -174,29 +204,41 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
     {
         AdapterOperationRequest operation = DecodeOperation(command);
         AdapterProtocolJson.ValidateMutation(operation, requiresDestination: false);
+        CopyMode mode = ReadCopyMode(command, operation);
+        Guid? parentCopy = ReadParentCopy(command, mode);
         LocalFileOperations.RequireNoDurableDirectoryMove(stateDirectory, operation.OperationId);
         _atomicDirectories?.RequireOrdinaryOperation(operation.OperationId);
         long length = command.Payload.GetProperty("length").GetInt64();
         Guid stream = command.Payload.GetProperty("streamId").GetGuid();
         if (length < 0 || stream == Guid.Empty || _uploads.Count >= 4) throw new InvalidDataException("UploadLimit");
         if (_uploads.Values.Any(pending => pending.Operation.OperationId == operation.OperationId)) throw new InvalidDataException("OperationInProgress");
-        string destination = paths.Resolve(address.Path);
-        LocalFileOperations.EnsureNoRecovery(paths, operation);
         string fingerprint = Fingerprint(command.MessageType, operation, length);
         bool replay = _accepted.TryGetValue(operation.OperationId, out AcceptedUpload? accepted);
         if (replay && accepted!.Fingerprint != fingerprint) throw new InvalidDataException("OperationBindingMismatch");
-        if (!replay)
+        if (mode == CopyMode.Ordinary)
         {
-            string? current = await LocalFileOperations.RevisionAsync(paths, address.Path, token).ConfigureAwait(false);
-            AdapterMutationPreconditions conditions = operation.Preconditions ?? new();
-            if (current != conditions.ExpectedRevision || (conditions.DestinationMustBeAbsent && current is not null))
-                throw new InvalidDataException("RemoteConflict");
+            string destination = paths.Resolve(address.Path);
+            LocalFileOperations.EnsureNoRecovery(paths, operation);
+            if (!replay)
+            {
+                string? current = await LocalFileOperations.RevisionAsync(paths, address.Path, token).ConfigureAwait(false);
+                AdapterMutationPreconditions conditions = operation.Preconditions ?? new();
+                if (current != conditions.ExpectedRevision || (conditions.DestinationMustBeAbsent && current is not null))
+                    throw new InvalidDataException("RemoteConflict");
+            }
+            if (!Directory.Exists(Path.GetDirectoryName(destination))) throw new InvalidDataException("ParentNotFound");
         }
-        if (!Directory.Exists(Path.GetDirectoryName(destination))) throw new InvalidDataException("ParentNotFound");
+        else
+        {
+            if (replay) throw new InvalidDataException("OperationBindingMismatch");
+            if (operation.IsDirectory || operation.Preconditions is not { ExpectedRevision: null, DestinationMustBeAbsent: true })
+                throw new InvalidDataException("DurableCopyPreconditionsRequired");
+            _ = paths.ResolveAddress(address.Path);
+        }
         var lease = new AdapterTransferLease(cache);
         try
         {
-            _uploads.Add(command.RequestId, new(command, operation, paths, fingerprint, replay,
+            _uploads.Add(command.RequestId, new(command, operation, paths, fingerprint, replay, mode, parentCopy,
                 new(command.RequestId, arguments.InstanceId, arguments.WorkerSessionId, stream, address.RootKey, 0, length), lease));
         }
         catch { await lease.DisposeAsync().ConfigureAwait(false); throw; }
@@ -214,7 +256,14 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
             upload.Lease.Stream.Position = 0;
             string digest = Convert.ToHexString(await SHA256.HashDataAsync(upload.Lease.Stream, token).ConfigureAwait(false));
             string? revision;
-            if (upload.Replay)
+            if (upload.Mode != CopyMode.Ordinary)
+            {
+                var content = new LocalDurableCopyContent(upload.Lease.Stream, upload.Lease.Stream.Length, digest);
+                revision = await LocalFileOperations.PublishDurableCopyAsync(arguments.InstanceId, upload.Paths, upload.Operation,
+                    stateDirectory!, content, upload.Mode == CopyMode.Resume, cancellationToken: token,
+                    parentCopyOperationId: upload.ParentCopyOperationId).ConfigureAwait(false);
+            }
+            else if (upload.Replay)
             {
                 AcceptedUpload accepted = _accepted[upload.Operation.OperationId];
                 if (accepted.Digest != digest) throw new InvalidDataException("OperationBindingMismatch");
@@ -276,6 +325,8 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
         }
         else operation = DecodeOperation(command);
         AdapterProtocolJson.ValidateMutation(operation, requiresDestination: command.MessageType == "Move");
+        CopyMode copyMode = ReadCopyMode(command, operation);
+        Guid? parentCopy = ReadParentCopy(command, copyMode);
         bool durableMove = false;
         if (command.Payload.TryGetProperty("durableDirectoryMove", out JsonElement durableFlag))
         {
@@ -292,7 +343,15 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
         LocalWorkerPaths? destination = command.MessageType == "Move" ? roots.GetPaths(operation.DestinationRootKey!) : null;
         string fingerprint = Fingerprint(command.MessageType, operation, null);
         string? revision;
-        if (durableMove)
+        if (copyMode != CopyMode.Ordinary)
+        {
+            if (_accepted.ContainsKey(operation.OperationId) || _uploads.Values.Any(upload => upload.Operation.OperationId == operation.OperationId))
+                throw new InvalidDataException("OperationBindingMismatch");
+            revision = await LocalFileOperations.PublishDurableCopyAsync(arguments.InstanceId, paths, operation,
+                stateDirectory!, null, copyMode == CopyMode.Resume, cancellationToken: token,
+                parentCopyOperationId: parentCopy).ConfigureAwait(false);
+        }
+        else if (durableMove)
         {
             if (_accepted.ContainsKey(operation.OperationId) || _uploads.Values.Any(upload => upload.Operation.OperationId == operation.OperationId))
                 throw new InvalidDataException("OperationBindingMismatch");
@@ -316,6 +375,47 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
 
     private static string Fingerprint(string type, AdapterOperationRequest operation, long? length) =>
         Convert.ToHexString(SHA256.HashData(AdapterProtocolJson.Encode(new { type, operation, length })));
+
+    private bool HasDurableMutationOwnership(Guid operationId) =>
+        LocalFileOperations.HasDirectoryMoveOwnership(stateDirectory, operationId) ||
+        LocalFileOperations.HasDurableCopyOwnership(stateDirectory, operationId);
+
+    private async Task<string> ReadDurableDirectoryRevisionAsync(AdapterFileAddress address, LocalWorkerPaths paths,
+        JsonElement original, CancellationToken token)
+    {
+        if (!durableCopyRoots.Contains(address.RootKey, StringComparer.Ordinal))
+            throw new InvalidDataException("CapabilityUnavailable");
+        if (original.ValueKind != JsonValueKind.String || !original.TryGetGuid(out Guid id) || id == Guid.Empty)
+            throw new InvalidDataException("InvalidDurableDirectoryCopy");
+        return await LocalFileOperations.ReadDurableCopyDirectoryRevisionAsync(arguments.InstanceId, paths, address.RootKey,
+            address.Path, stateDirectory!, id, token).ConfigureAwait(false);
+    }
+
+    private static Guid? ReadParentCopy(AdapterControlFrame command, CopyMode mode)
+    {
+        if (!command.Payload.TryGetProperty("durableDirectoryCopyParentId", out JsonElement value)) return null;
+        if (mode == CopyMode.Ordinary || value.ValueKind != JsonValueKind.String || !value.TryGetGuid(out Guid id) || id == Guid.Empty)
+            throw new InvalidDataException("InvalidDurableDirectoryCopy");
+        return id;
+    }
+
+    private CopyMode ReadCopyMode(AdapterControlFrame command, AdapterOperationRequest operation)
+    {
+        if (!command.Payload.TryGetProperty("durableDirectoryCopy", out JsonElement value))
+        {
+            if (LocalFileOperations.HasDurableCopyOwnership(stateDirectory, operation.OperationId))
+                throw new InvalidDataException("OperationBindingMismatch");
+            return CopyMode.Ordinary;
+        }
+        if (!durableCopyRoots.Contains(operation.RootKey, StringComparer.Ordinal) || command.MessageType is not ("CreateDirectory" or "Upload"))
+            throw new InvalidDataException("CapabilityUnavailable");
+        return value.ValueKind == JsonValueKind.String ? value.GetString() switch
+        {
+            "start" => CopyMode.Start,
+            "resume" => CopyMode.Resume,
+            _ => throw new InvalidDataException("InvalidDurableDirectoryCopy")
+        } : throw new InvalidDataException("InvalidDurableDirectoryCopy");
+    }
 
     private ValueTask ReplyAsync(AdapterControlFrame command, string type, object payload, CancellationToken token) =>
         channel.SendAsync(type, command.RequestId, true, payload, token);
@@ -360,5 +460,5 @@ internal sealed class LocalWorkerProtocol(AdapterControlChannel channel, Adapter
 
     private sealed record AcceptedUpload(string Fingerprint, string? Digest, string? Revision);
     private sealed record PendingUpload(AdapterControlFrame Command, AdapterOperationRequest Operation, LocalWorkerPaths Paths,
-        string Fingerprint, bool Replay, AdapterStreamBinding Binding, AdapterTransferLease Lease);
+        string Fingerprint, bool Replay, CopyMode Mode, Guid? ParentCopyOperationId, AdapterStreamBinding Binding, AdapterTransferLease Lease);
 }

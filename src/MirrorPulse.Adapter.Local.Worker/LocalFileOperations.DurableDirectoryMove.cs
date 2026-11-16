@@ -87,7 +87,7 @@ internal static partial class LocalFileOperations
                     throw new InvalidDataException("RemoteConflict");
                 intent = retained;
             }
-            else await WriteDirectoryMoveIntentAsync(intentPath, intent, cancellationToken).ConfigureAwait(false);
+            else await WriteDurableIntentAsync(intentPath, intent, cancellationToken).ConfigureAwait(false);
             await AtAsync(LocalDirectoryMoveCheckpoint.AfterSourceChecked, cancellationToken).ConfigureAwait(false);
             AtomicDirectoryNative.Move(source, destination, transaction);
             // Reopen after staging: TxF refuses this rename while the original directory's
@@ -167,7 +167,7 @@ internal static partial class LocalFileOperations
     private static string DirectoryMoveIntentChecksum(LocalDirectoryMoveIntent intent) =>
         Convert.ToHexString(SHA256.HashData(AdapterProtocolJson.Encode(intent with { Checksum = string.Empty })));
 
-    private static async Task WriteDirectoryMoveIntentAsync(string path, LocalDirectoryMoveIntent intent, CancellationToken token)
+    private static async Task WriteDurableIntentAsync<T>(string path, T intent, CancellationToken token)
     {
         string staged = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
