@@ -7,6 +7,8 @@ namespace MirrorPulse.Adapter.Local.Worker;
 public static class LocalWorkerProgram
 {
     internal const string DurableDirectoryMoveCapability = "local-durable-directory-move";
+    internal const string DurableDirectoryCopyCapability = "local-durable-directory-copy";
+    internal const string DurableDirectoryCopyPreparationCapability = "local-durable-directory-copy-preparation";
 
     public static async Task<int> RunAsync(IReadOnlyList<string> args,
         CancellationToken cancellationToken = default)
@@ -23,7 +25,8 @@ public static class LocalWorkerProgram
         if (!string.IsNullOrWhiteSpace(stateDirectory))
             capabilities = [.. capabilities, DurableDirectoryMoveCapability];
         if (LocalAtomicDirectoryBackend.IsEnabled(stateDirectory))
-            capabilities = [.. capabilities, AdapterOriginalDirectoryWire.Capability, AdapterAtomicDirectoryDeletionWire.Capability];
+            capabilities = [.. capabilities, AdapterOriginalDirectoryWire.Capability, AdapterAtomicDirectoryDeletionWire.Capability,
+                DurableDirectoryCopyCapability, DurableDirectoryCopyPreparationCapability];
         var offer = new AdapterHello(new(2, 2), capabilities);
         await channel.SendAsync("Hello", helloId, false, offer, cancellationToken).ConfigureAwait(false);
         try
@@ -41,10 +44,19 @@ public static class LocalWorkerProgram
             if (ready.Capabilities.Except(offer.Capabilities, StringComparer.Ordinal).Any())
                 throw new InvalidDataException("UnadvertisedCapabilitySelected");
             bool durableMoveSelected = ready.Capabilities.Contains(DurableDirectoryMoveCapability, StringComparer.Ordinal);
-            await using var protocol = new LocalWorkerProtocol(channel, arguments, roots, cache, stateDirectory, durableMoveSelected);
+            bool durableCopySelected = ready.Capabilities.Contains(DurableDirectoryCopyCapability, StringComparer.Ordinal);
+            string[] durableCopyRoots = durableCopySelected
+                ? ready.Roots.Where(root => root.Enabled && LocalFileOperations.SupportsDurableCopy(roots.GetPaths(root.RootKey), stateDirectory!))
+                    .Select(root => root.RootKey).ToArray()
+                : [];
+            bool durableCopyPreparationSelected = ready.Capabilities.Contains(DurableDirectoryCopyPreparationCapability, StringComparer.Ordinal);
+            if (durableCopyPreparationSelected && !durableCopySelected) throw new InvalidDataException("InvalidDurableCopyCapabilities");
+            await using var protocol = new LocalWorkerProtocol(channel, arguments, roots, cache, stateDirectory,
+                durableMoveSelected, durableCopyRoots, durableCopyPreparationSelected);
             if (LocalAtomicDirectoryBackend.IsEnabled(stateDirectory))
                 protocol.ConfigureAtomicDirectoryBackend(new(roots, stateDirectory!), ready.Capabilities);
-            await channel.SendAsync("Connected", helloId, false, new { }, cancellationToken).ConfigureAwait(false);
+            await channel.SendAsync("Connected", helloId, false, durableCopySelected ? new { durableCopyRoots } : (object)new { },
+                cancellationToken).ConfigureAwait(false);
             await protocol.RunAsync(cancellationToken).ConfigureAwait(false);
             return 0;
         }

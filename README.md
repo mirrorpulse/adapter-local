@@ -49,6 +49,28 @@ accepts the container rename. Descendant content and revisions remain separate
 from the move receipt. If the selected durable path cannot run, the Worker
 returns an error before performing a non-transactional rename.
 
+When both peers select `local-durable-directory-copy`, the Host can set
+`durableDirectoryCopy: "start"` on `CreateDirectory` or `Upload` with an
+absent-target precondition. The Worker reports eligible active roots in
+`Connected.durableCopyRoots`. The Worker binds the operation ID to the original
+root, path, kind, and complete upload bytes. The new target and immutable
+acceptance commit together in a local NTFS transaction. The Worker state and
+target must be on the same volume. With `durableDirectoryCopy: "resume"`, the
+same request replays its committed revision or continues an authenticated
+pending intent. A missing intent and receipt yield `MutationOutcomeAmbiguous`.
+If both peers also select `local-durable-directory-copy-preparation`, the Host
+can send `PrepareDirectoryCopy` with the original operation ID, target,
+absent-target precondition, kind, and parent copy ID when required. Files also
+require `length` and `contentSha256`. The Worker persists the intent
+without changing the target and replies with `DirectoryCopyPrepared`. The Host
+can then record its dispatch start and call the original mutation in `resume`
+mode. Repeating preparation with the same request is safe across Worker restarts.
+For a copied directory, `Stat.durableDirectoryCopyOperationId` verifies the
+current directory against the original receipt even after child writes change
+the revision. A child copy can supply `durableDirectoryCopyParentId` to require
+that same parent under its publication guard. The Host independently verifies
+target membership and file contents before source deletion.
+
 Native contracts: [CreateFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew),
 [file rename information](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_rename_info),
 and [handle-based mutation](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-setfileinformationbyhandle).

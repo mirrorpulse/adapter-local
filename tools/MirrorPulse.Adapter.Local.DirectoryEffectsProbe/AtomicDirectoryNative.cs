@@ -46,15 +46,16 @@ internal static class AtomicDirectoryNative
         }
         public void Dispose() { _stream?.Dispose(); Handle.Dispose(); }
     }
-    internal static SafeFileHandle Begin()
+    internal static SafeFileHandle Begin(uint timeoutMilliseconds = 30_000)
     {
-        var handle = CreateTransaction(IntPtr.Zero, IntPtr.Zero, 0, 0, 0, 30000, "MirrorPulse original directory batch");
+        var handle = CreateTransaction(IntPtr.Zero, IntPtr.Zero, 0, 0, 0, timeoutMilliseconds, "MirrorPulse original directory batch");
         if (!handle.IsInvalid) return handle;
         var failure = LastFailure("CreateTransaction"); handle.Dispose(); throw failure;
     }
     internal static Item Open(string path, SafeFileHandle transaction)
     {
-        var handle = CreateFileTransactedW(path, 0xC0010000, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero, transaction, IntPtr.Zero, IntPtr.Zero);
+        var handle = CreateFileTransactedW(ExtendTransactionPath(path), 0xC0010000, 7, IntPtr.Zero, 3, 0x02200000,
+            IntPtr.Zero, transaction, IntPtr.Zero, IntPtr.Zero);
         if (!handle.IsInvalid) return new(handle);
         var failure = LastFailure("OpenTransacted"); handle.Dispose(); throw failure;
     }
@@ -81,6 +82,7 @@ internal static class AtomicDirectoryNative
     }
     internal static void Remove(string path, bool directory, SafeFileHandle transaction)
     {
+        path = ExtendTransactionPath(path);
         bool removed = directory ? RemoveDirectoryTransactedW(path, transaction) : DeleteFileTransactedW(path, transaction);
         if (!removed) throw LastFailure(directory ? "RemoveDirectory" : "RemoveFile");
     }
@@ -106,9 +108,27 @@ internal static class AtomicDirectoryNative
 
     internal static void WriteReceipt(string path, byte[] payload, SafeFileHandle transaction)
     {
-        using var handle = CreateFileTransactedW(path, 0x40000000, 0, IntPtr.Zero, 1, 0x00200000, IntPtr.Zero, transaction, IntPtr.Zero, IntPtr.Zero);
-        if (handle.IsInvalid) throw LastFailure("OpenReceipt");
-        using var stream = new FileStream(handle, FileAccess.Write); stream.Write(payload); stream.Flush(true);
+        using var stream = CreateFile(path, transaction, "OpenReceipt");
+        stream.Write(payload);
+        stream.Flush(true);
+    }
+    internal static FileStream CreateFile(string path, SafeFileHandle transaction, string nativeCall)
+    {
+        var handle = CreateFileTransactedW(ExtendTransactionPath(path), 0x40000000, 0, IntPtr.Zero, 1, 0x00200000,
+            IntPtr.Zero, transaction, IntPtr.Zero, IntPtr.Zero);
+        if (handle.IsInvalid)
+        {
+            var failure = LastFailure(nativeCall);
+            handle.Dispose();
+            throw failure;
+        }
+        try { return new FileStream(handle, FileAccess.Write); }
+        catch { handle.Dispose(); throw; }
+    }
+    internal static void CreateDirectory(string path, SafeFileHandle transaction)
+    {
+        if (!CreateDirectoryTransactedW(IntPtr.Zero, ExtendTransactionPath(path), IntPtr.Zero, transaction))
+            throw LastFailure("CreateDirectoryTransacted");
     }
     internal static void Commit(SafeFileHandle transaction)
     {
@@ -145,6 +165,9 @@ internal static class AtomicDirectoryNative
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     private static extern SafeFileHandle CreateFileTransactedW(string path, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template, SafeFileHandle transaction, IntPtr miniVersion, IntPtr extended);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [return: MarshalAs(UnmanagedType.Bool)] private static extern bool CreateDirectoryTransactedW(IntPtr template, string path, IntPtr security, SafeFileHandle transaction);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [return: MarshalAs(UnmanagedType.Bool)] private static extern bool DeleteFileTransactedW(string path, SafeFileHandle transaction);
