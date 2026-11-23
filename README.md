@@ -112,7 +112,8 @@ YAML alone do not establish these protections.
 
 Both native runners verify the same frozen signed package and hash. The release
 gate uses the Local filesystem profile, then production installation, catalog,
-Host and CfSharp demand-provider operations at MirrorPulse 99287cf. Actual
+Host configuration, Worker operations and CfSharp demand-provider checks at
+MirrorPulse 696d9d7f. Actual
 publication candidates must pass the product's official publisher trust anchor;
 dry runs use an explicitly disposable test key and do not publish a tag or release.
 The package is not rebuilt after signing or approval.

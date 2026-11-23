@@ -22,31 +22,35 @@ $project = 'tools/MirrorPulse.Adapter.Local.Conformance/MirrorPulse.Adapter.Loca
 if ($LASTEXITCODE -ne 0) { throw 'Local native conformance locked restore failed.' }
 & dotnet run --project $project -c Release --no-restore -- --worker (Join-Path $unpacked "worker/$runtime/MirrorPulse.Adapter.Worker.exe")
 if ($LASTEXITCODE -ne 0) { throw 'The exact signed Local Worker failed its real filesystem profile.' }
-$names = @('MP_LOCAL_V2_PACKAGE', 'MP_LOCAL_V2_PUBLIC_KEY', 'MP_LOCAL_V2_OFFICIAL_SIGNED')
+$names = @('MP_LOCAL_V2_PACKAGE', 'MP_LOCAL_V2_PUBLIC_KEY', 'MP_LOCAL_V2_OFFICIAL_SIGNED',
+    'MP_LOCAL_FORM_PACKAGE', 'MP_LOCAL_FORM_PUBLIC_KEY', 'MP_LOCAL_FORM_OFFICIAL_SIGNED')
 $previous = @{}
 foreach ($name in $names) { $previous[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 try {
     $env:MP_LOCAL_V2_PACKAGE = $package
     $env:MP_LOCAL_V2_PUBLIC_KEY = $package + '.public.pem'
     $env:MP_LOCAL_V2_OFFICIAL_SIGNED = ([bool]$metadata.publish).ToString().ToLowerInvariant()
+    $env:MP_LOCAL_FORM_PACKAGE = $env:MP_LOCAL_V2_PACKAGE
+    $env:MP_LOCAL_FORM_PUBLIC_KEY = $env:MP_LOCAL_V2_PUBLIC_KEY
+    $env:MP_LOCAL_FORM_OFFICIAL_SIGNED = $env:MP_LOCAL_V2_OFFICIAL_SIGNED
     Push-Location $product
     try {
         $productSha = (& git rev-parse HEAD | Out-String).Trim()
-        if ($productSha -cne '99287cfb260f2e6e5862881995b0af07fbe88731') { throw 'The product verifier source differs from its fixed contract.' }
+        if ($productSha -cne '696d9d7ff983d29d3fc665f6f8be0acb56238d39') { throw 'The product verifier source differs from its fixed contract.' }
         & pwsh -NoProfile -File eng/restore-adapter-sdk.ps1
         if ($LASTEXITCODE -ne 0) { throw 'Pinned product SDK verification failed.' }
         & dotnet restore tests/MirrorPulse.Core.Tests/MirrorPulse.Core.Tests.csproj --locked-mode --packages artifacts/provider-process-packages
         if ($LASTEXITCODE -ne 0) { throw 'Pinned product locked restore failed.' }
         $results = Join-Path $assets "process-$runtime"
-        & dotnet test tests/MirrorPulse.Core.Tests/MirrorPulse.Core.Tests.csproj -c Release --no-restore --filter FullyQualifiedName~SignedLocalV2WorkerProcessTests --logger 'trx;LogFileName=local-v2.trx' --results-directory $results
+        & dotnet test tests/MirrorPulse.Core.Tests/MirrorPulse.Core.Tests.csproj -c Release --no-restore --filter 'FullyQualifiedName~SignedLocalV2WorkerProcessTests|FullyQualifiedName~SignedLocalFormPackageTests' --logger 'trx;LogFileName=local-v2.trx' --results-directory $results
         if ($LASTEXITCODE -ne 0) { throw 'Production signature/install/Host conformance failed.' }
         [xml]$trx = Get-Content -LiteralPath (Join-Path $results 'local-v2.trx') -Raw
         $counts = $trx.TestRun.ResultSummary.Counters
-        if ($counts.total -ne 1 -or $counts.executed -ne 1 -or $counts.passed -ne 1 -or $counts.notExecuted -ne 0) { throw 'The product profile must execute without skips.' }
+        if ($counts.total -ne 2 -or $counts.executed -ne 2 -or $counts.passed -ne 2 -or $counts.notExecuted -ne 0) { throw 'The product profile must execute without skips.' }
         [ordered]@{ schemaVersion = 1; adapterSourceSha = $SourceSha; mirrorPulseSourceSha = $productSha;
             runtime = $runtime; sdkVersion = $sdkPin.version; sdkSourceSha = $sdkPin.sourceSha;
             version = $metadata.version; packageSha256 = $packageRecord.sha256; packageLength = $packageRecord.length;
-            localConformanceCases = 14; productCases = 1; privateRuntimeVerified = $true;
+            localConformanceCases = 14; productCases = 2; privateRuntimeVerified = $true;
             officialTrustVerified = [bool]$metadata.publish; published = $false
         } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $results 'local-v2-evidence.json') -Encoding utf8
     } finally { Pop-Location }
