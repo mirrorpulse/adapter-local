@@ -1,0 +1,7 @@
+{
+  "local.title": "Local directory",
+  "local.description": "Sync files from a folder on this PC.",
+  "local.setup": "Source folder",
+  "local.instructions": "Enter the full path of the folder you want MirrorPulse to sync.",
+  "local.folder": "Folder path"
+}
