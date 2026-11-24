@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<form version="1">
+    <heading textKey="local.setup" />
+    <paragraph textKey="local.instructions" />
+    <text key="sourceDirectory" labelKey="local.folder" required="true" />
+</form>

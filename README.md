@@ -2,7 +2,9 @@
 
 This is the official repository for the MirrorPulse Local Directory Adapter.
 
-The Worker consumes the fixed, hash-verified `MirrorPulse.Adapter.Sdk` 0.3.1
+Each deployment syncs one local folder. Enter its full source path in the Adapter configuration form. MirrorPulse saves the setting and supplies it to the Worker when the deployment starts.
+
+The Worker consumes the fixed, hash-verified `MirrorPulse.Adapter.Sdk` 1.0.0-preview.5
 release package. The Host supplies a `sourceDirectory` for each authorized root;
 disabled roots stay offline without probing their source paths. File IDs,
 pagination cursors, range reads, and uploads are scoped by the root key. A single
@@ -110,12 +112,13 @@ YAML alone do not establish these protections.
 
 Both native runners verify the same frozen signed package and hash. The release
 gate uses the Local filesystem profile, then production installation, catalog,
-Host and CfSharp demand-provider operations at MirrorPulse 99287cf. Actual
+Host configuration, Worker operations and CfSharp demand-provider checks at
+MirrorPulse 696d9d7f. Actual
 publication candidates must pass the product's official publisher trust anchor;
 dry runs use an explicitly disposable test key and do not publish a tag or release.
 The package is not rebuilt after signing or approval.
 
-`eng/adapter-sdk.lock.json` pins the original SDK 0.3.1 NuGet package from its
+`eng/adapter-sdk.lock.json` pins the SDK 1.0.0-preview.5 NuGet package from its
 GitHub release. `eng/sdk-conformance.lock.json` pins the specification and native
 conformance assets from the same source and verifies their lengths and hashes.
 That SDK runner implements a memory-source profile; the Local profile is built
